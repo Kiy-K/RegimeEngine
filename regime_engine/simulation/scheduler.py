@@ -48,15 +48,6 @@ class Scheduler:
         pre_step_hooks: Optional[List[StepHook]] = None,
         post_step_hooks: Optional[List[StepHook]] = None,
     ) -> None:
-        """Initialise the scheduler.
-
-        Args:
-            params:           System parameters.
-            pre_step_hooks:   Callables invoked with (state_before, state_before)
-                              before integration.
-            post_step_hooks:  Callables invoked with (state_before, state_after)
-                              after integration.
-        """
         self.params: SystemParameters = params
         self._pre_hooks: List[StepHook] = list(pre_step_hooks or [])
         self._post_hooks: List[StepHook] = list(post_step_hooks or [])
@@ -68,11 +59,7 @@ class Scheduler:
     # ------------------------------------------------------------------ #
 
     def initialise(self, state: RegimeState) -> None:
-        """Set the starting regime state.
-
-        Args:
-            state: Initial regime state (macro variables must be current).
-        """
+        """Set the starting regime state."""
         self._current_state = recompute_system_state(state, self.params)
 
     # ------------------------------------------------------------------ #
@@ -82,17 +69,28 @@ class Scheduler:
     def collect_action(self, action: Action) -> None:
         """Register an action to be applied on the next tick.
 
-        Multiple actions from different agents for the same step are allowed.
-        They are applied in collection order.
+        Validates that both actor_idx and target_idx are within the current
+        faction count. Actions from different agents for the same step are
+        collected and applied in order.
 
         Args:
             action: The action to enqueue.
+
+        Raises:
+            ValueError: If actor_idx or target_idx are out of range.
         """
         if self._current_state is not None:
-            if action.faction_idx >= self._current_state.n_factions:
+            n = self._current_state.n_factions
+            # FIX: Action uses actor_idx and target_idx, not faction_idx
+            if action.actor_idx >= n:
                 raise ValueError(
-                    f"faction_idx {action.faction_idx} out of range "
-                    f"(n_factions={self._current_state.n_factions})"
+                    f"actor_idx {action.actor_idx} out of range "
+                    f"(n_factions={n})"
+                )
+            if action.target_idx >= n:
+                raise ValueError(
+                    f"target_idx {action.target_idx} out of range "
+                    f"(n_factions={n})"
                 )
         self._pending_actions.append(action)
 
@@ -103,14 +101,15 @@ class Scheduler:
     def tick(self) -> RegimeState:
         """Apply all pending actions and advance the simulation by one step.
 
-        sequence:
+        Sequence:
           1. Fire pre-step hooks.
           2. Apply pending actions.
           3. Recompute macro variables.
           4. RK4 integration.
-          5. Clear action queue.
-          6. Fire post-step hooks.
-          7. Return new state.
+          5. Apply exogenous events.
+          6. Clear action queue.
+          7. Fire post-step hooks.
+          8. Return new state.
 
         Returns:
             The new RegimeState after integration.
@@ -125,22 +124,17 @@ class Scheduler:
 
         state_before = self._current_state
 
-        # Pre-step hooks
         for hook in self._pre_hooks:
             hook(state_before, state_before)
 
-        # Apply actions
         state_after_actions = apply_actions(state_before, self._pending_actions)
         state_after_actions = recompute_system_state(state_after_actions, self.params)
 
-        # Integrate and apply exogenous shocks
         state_after = rk4_step(state_after_actions, self.params)
         state_after = check_and_apply_events(state_after, self.params)
 
-        # Clear queue
         self._pending_actions = []
 
-        # Post-step hooks
         for hook in self._post_hooks:
             hook(state_before, state_after)
 
@@ -153,11 +147,7 @@ class Scheduler:
 
     @property
     def state(self) -> RegimeState:
-        """Current regime state.
-
-        Raises:
-            RuntimeError: If the scheduler has not been initialised.
-        """
+        """Current regime state."""
         if self._current_state is None:
             raise RuntimeError(
                 "Scheduler not initialised. Call initialise(state) first."
@@ -170,17 +160,7 @@ class Scheduler:
         return len(self._pending_actions)
 
     def register_pre_hook(self, hook: StepHook) -> None:
-        """Add a pre-step callback.
-
-        Args:
-            hook: Callable(state_before, state_before) → None.
-        """
         self._pre_hooks.append(hook)
 
     def register_post_hook(self, hook: StepHook) -> None:
-        """Add a post-step callback.
-
-        Args:
-            hook: Callable(state_before, state_after) → None.
-        """
         self._post_hooks.append(hook)

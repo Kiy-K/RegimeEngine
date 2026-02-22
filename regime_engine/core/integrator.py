@@ -147,6 +147,7 @@ def _step_hierarchical(
     new_state: RegimeState,
     params: SystemParameters,
     dt: float,
+    rng: Optional[np.random.Generator] = None,
 ) -> RegimeState:
     """RK4 step for district state and pipeline buffers; attach to new_state."""
     hier = state.hierarchical
@@ -199,10 +200,10 @@ def _step_hierarchical(
     P_new = P0 + factor * (dP1 + 2.0 * dP2 + 2.0 * dP3 + dP4)
 
     # SDE noise on district unrest (and optionally local_gdp)
-    if params.sigma_noise > 0:
+    if params.sigma_noise > 0 and rng is not None:
         dt_sqrt = np.sqrt(dt)
         n_d = D_new.shape[0]
-        D_new[:, 1] += params.sigma_noise * 0.5 * dt_sqrt * np.random.randn(n_d)
+        D_new[:, 1] += params.sigma_noise * 0.5 * dt_sqrt * rng.standard_normal(n_d)
 
     D_new = np.clip(D_new, 0.0, 1.0)
     P_new = np.clip(P_new, 0.0, 1.0)
@@ -216,22 +217,27 @@ def _apply_euler_maruyama(
     powers: NDArray[np.float64],
     rads: NDArray[np.float64],
     params: SystemParameters,
+    rng: Optional[np.random.Generator] = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Apply SDE noise to base RK4 integration.
     dX_t = f(X_t)dt + sigma * dW_t
     """
-    if params.sigma_noise <= 0.0:
+    if params.sigma_noise <= 0.0 or rng is None:
         return powers, rads
         
     n = len(powers)
     dt_sqrt = np.sqrt(params.dt)
-    noise_p = params.sigma_noise * dt_sqrt * np.random.randn(n)
-    noise_r = params.sigma_noise * dt_sqrt * np.random.randn(n)
+    noise_p = params.sigma_noise * dt_sqrt * rng.standard_normal(n)
+    noise_r = params.sigma_noise * dt_sqrt * rng.standard_normal(n)
     
     return powers + noise_p, rads + noise_r
 
 
-def step(state: RegimeState, params: SystemParameters) -> RegimeState:
+def step(
+    state: RegimeState,
+    params: SystemParameters,
+    rng: Optional[np.random.Generator] = None,
+) -> RegimeState:
     """Advance the system by one time step using the RK4 method."""
     dt = params.dt
     half_dt = dt * 0.5
@@ -292,7 +298,7 @@ def step(state: RegimeState, params: SystemParameters) -> RegimeState:
     )
 
     # Apply SDE Noise (Euler-Maruyama step)
-    new_P, new_Rad = _apply_euler_maruyama(new_P, new_Rad, params)
+    new_P, new_Rad = _apply_euler_maruyama(new_P, new_Rad, params, rng)
 
     new_state = _build_state_from_arrays(
         new_P, new_Rad, new_Coh, new_Mem, new_W, new_Exh, new_Gdp, new_Pil, new_Aff,
@@ -302,7 +308,7 @@ def step(state: RegimeState, params: SystemParameters) -> RegimeState:
     # Phase 3: hierarchical district + pipeline RK4 step
     if getattr(params, "use_hierarchy", False) and getattr(state, "hierarchical", None) is not None:
         new_state = _step_hierarchical(
-            state, s2, s3, s4, new_state, params, dt
+            state, s2, s3, s4, new_state, params, dt, rng
         )
 
     return new_state

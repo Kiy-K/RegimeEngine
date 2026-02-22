@@ -5,8 +5,8 @@ Objective: systemic survival under spatial instability. Not fairness.
 - Hierarchical districts, topology randomized per episode
 - Spatial policy allocation (optional), shock injection, early warning index
 - Hazard clustering amplification, exhaustion growth tracking
-- Reward: R = α*survival_time - β*peak_hazard - γ*exhaustion_acceleration
-          - δ*cluster_intensity - ε*volatility_spike_rate
+- Reward: R = α*exp(-hazard) - β*hazard/step - γ*exh_accel
+          - δ*cluster_intensity - ε*volatility_spike - 0.5*n_critical
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ from .action_space import (
     apply_action,
 )
 
-# Observation: aggregated regime (10 macro) + province summary (max_provinces*3) + EWI (1) + hazard_amp (1) + exh_growth (1) + top_k (k)
 MAX_PROVINCES = 10
 TOP_K_UNSTABLE = 5
+_SUPPRESSION_EXH_COST = 0.0064  # intensity**2 = 0.08**2
 
 
 @dataclass
@@ -77,7 +77,6 @@ class SurvivalConfig:
 
 
 def _make_base_params(seed: int, max_steps: int) -> SystemParameters:
-    """Base params with hierarchy enabled; nu/tau will be overridden at reset."""
     return SystemParameters(
         use_hierarchy=True,
         n_provinces=7,
@@ -89,9 +88,8 @@ def _make_base_params(seed: int, max_steps: int) -> SystemParameters:
 
 
 def _observation_dim(n_provinces: int) -> int:
-    """Compressed spatial observation size: regime macro + province*3 + EWI + hazard_amp + exh_growth + top_k."""
-    regime = 10  # L, C, F, I, M, R, E, V, Exh, GDP
-    province_summary = MAX_PROVINCES * 3  # unrest_mean, gdp_mean, admin_mean per province (padded)
+    regime = 10
+    province_summary = MAX_PROVINCES * 3
     return regime + province_summary + 1 + 1 + 1 + TOP_K_UNSTABLE
 
 
@@ -111,10 +109,7 @@ class SurvivalRegimeEnv(gym.Env):
         self.config = config or SurvivalConfig()
         self._seed = seed
         self._rng = np.random.default_rng(seed)
-        self._base_params = _make_base_params(
-            seed or 0,
-            self.config.max_steps,
-        )
+        self._base_params = _make_base_params(seed or 0, self.config.max_steps)
         self._current_params: Optional[SystemParameters] = None
         self._state: Optional[RegimeState] = None
         self._n_provinces: int = 7
@@ -122,21 +117,27 @@ class SurvivalRegimeEnv(gym.Env):
         self._n_action_types = action_space_size()
         self._total_actions = self._n_factions * self._n_action_types
 
-        # Tracking for survival reward
+    def update_config(self, **kwargs):
+        """Update environment configuration in-place."""
+        for k, v in kwargs.items():
+            if hasattr(self.config, k):
+                setattr(self.config, k, v)
+
+        # Survival tracking
         self._peak_hazard: float = 0.0
         self._prev_exhaustion: float = 0.0
         self._prev_volatility: float = 0.0
         self._exh_acceleration_accum: float = 0.0
         self._volatility_spike_count: float = 0.0
 
-        # Phase 4: province tipping and collapse
-        self._consecutive_high_unrest: Optional[NDArray[np.intp]] = None  # (n_provinces,)
+        # Province tipping / collapse
+        self._consecutive_high_unrest: Optional[NDArray[np.intp]] = None
         self._province_critical: Optional[NDArray[np.uint8]] = None
         self._province_instability_counter: Optional[NDArray[np.intp]] = None
         self._province_adjacency: Optional[NDArray[np.float64]] = None
         self._province_weight: Optional[NDArray[np.float64]] = None
-        self._ewi_history: list = []  # last 5 EWI values for collapse condition
-        self._diffusion_amplified_until_step: int = 0  # step index until which nu is 1.5x
+        self._ewi_history: list = []
+        self._diffusion_amplified_until_step: int = 0
 
         obs_dim = _observation_dim(MAX_PROVINCES)
         self.observation_space = spaces.Box(
@@ -146,8 +147,12 @@ class SurvivalRegimeEnv(gym.Env):
         )
         self.action_space = spaces.Discrete(self._total_actions)
 
+    # ------------------------------------------------------------------ #
+    # Topology                                                             #
+    # ------------------------------------------------------------------ #
+
     def _randomize_topology_and_params(self) -> Tuple[SystemParameters, HierarchicalState]:
-        """New topology and params each episode; agents must learn spatial principles."""
+        """New random topology and params each episode."""
         n_provinces = int(self._rng.integers(5, 11))
         dpp = int(self._rng.integers(5, 16))
         counts, n_d = build_province_district_layout(n_provinces, dpp)
@@ -167,7 +172,6 @@ class SurvivalRegimeEnv(gym.Env):
         nu = float(self._rng.uniform(nu_low, nu_high))
         tau = float(self._rng.uniform(1.0, 4.0))
 
-        # New params for this episode (replace hierarchy-related fields)
         from dataclasses import replace
         params = replace(
             self._base_params,
@@ -178,7 +182,6 @@ class SurvivalRegimeEnv(gym.Env):
             max_steps=self.config.max_steps,
         )
 
-        # Build hierarchical state with this topology (custom A and counts)
         from ..core.hierarchical_state import DistrictState
         districts = [
             DistrictState(
@@ -202,13 +205,21 @@ class SurvivalRegimeEnv(gym.Env):
         )
         return params, hier
 
+    # ------------------------------------------------------------------ #
+    # Reset                                                                #
+    # ------------------------------------------------------------------ #
+
     def reset(
         self,
         *,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
+        super().reset(seed=seed)
         if seed is not None:
+            import random
+            random.seed(seed)
+            np.random.seed(seed)
             self._rng = np.random.default_rng(seed)
         self._current_params, hier = self._randomize_topology_and_params()
         self._n_provinces = hier.n_provinces
@@ -228,6 +239,7 @@ class SurvivalRegimeEnv(gym.Env):
         )
         self._state = recompute_system_state(state, self._current_params)
 
+        # Reset trackers
         self._peak_hazard = 0.0
         self._prev_exhaustion = self._state.system.exhaustion
         self._prev_volatility = self._state.system.volatility
@@ -239,12 +251,18 @@ class SurvivalRegimeEnv(gym.Env):
         self._province_critical = np.zeros(self._n_provinces, dtype=np.uint8)
         self._province_instability_counter = np.zeros(self._n_provinces, dtype=np.intp)
         if self._state.hierarchical is not None:
-            self._province_adjacency, self._province_weight = build_province_adjacency(self._state.hierarchical)
+            self._province_adjacency, self._province_weight = build_province_adjacency(
+                self._state.hierarchical
+            )
         else:
             self._province_adjacency = np.zeros((MAX_PROVINCES, MAX_PROVINCES), dtype=np.float64)
             self._province_weight = np.zeros((MAX_PROVINCES, MAX_PROVINCES), dtype=np.float64)
 
         return self._get_obs(), self._get_info()
+
+    # ------------------------------------------------------------------ #
+    # Step (orchestrator — calls focused private methods)                 #
+    # ------------------------------------------------------------------ #
 
     def step(
         self,
@@ -252,24 +270,72 @@ class SurvivalRegimeEnv(gym.Env):
     ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
         if self._state is None or self._current_params is None:
             raise RuntimeError("Call reset() first.")
-        state = self._state
 
-        # Phase 4: diffusion amplification decay after 5 steps
-        if self._diffusion_amplified_until_step > 0 and state.step >= self._diffusion_amplified_until_step:
-            self._diffusion_amplified_until_step = 0
+        step_params = self._resolve_step_params()
+
+        state = self._apply_faction_action(self._state, action, step_params)
+        state = rk4_step(state, step_params, self._rng)
+        state = check_and_apply_events(state, step_params)
+
+        state, n_critical = self._process_spatial_dynamics(state, step_params)
+        state = self._apply_exhaustion_effects(state, step_params)
+
+        self._state = state
+
+        geo = self._get_geo(state)
+        hazard, ewi, exh_growth, vol_spike = self._compute_survival_signals(
+            state, geo
+        )
+
+        self._peak_hazard = max(self._peak_hazard, hazard)
+        self._update_ewi_history(ewi)
+
+        reward = self._compute_step_reward(
+            hazard, exh_growth, vol_spike, n_critical, state.step
+        )
+        terminated = self._check_termination(hazard, n_critical, state)
+        truncated = state.step >= self._current_params.max_steps and not terminated
+
+        info = self._get_info()
+        info["peak_hazard"] = self._peak_hazard
+        info["survival_steps"] = state.step
+        info["n_critical_provinces"] = n_critical
+        info["clustering_index"] = geo.get("clustering_index", 0.0)
+
+        return self._get_obs(), float(reward), terminated, truncated, info
+
+    # ------------------------------------------------------------------ #
+    # Private step helpers                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _resolve_step_params(self) -> SystemParameters:
+        """Return params, optionally with diffusion amplified."""
         from dataclasses import replace
-        from ..core.topology import diffusion_rate_bound
-        step_params = self._current_params
-        if self._diffusion_amplified_until_step > 0 and state.step < self._diffusion_amplified_until_step and state.hierarchical is not None:
+        params = self._current_params
+        state = self._state
+        if (
+            self._diffusion_amplified_until_step > 0
+            and state.step < self._diffusion_amplified_until_step
+            and state.hierarchical is not None
+        ):
             bound = diffusion_rate_bound(state.hierarchical.adjacency)
-            nu_amp = min(bound * 0.9, step_params.nu_diffusion * 1.5)
-            step_params = replace(step_params, nu_diffusion=nu_amp)
+            nu_amp = min(bound * 0.9, params.nu_diffusion * 1.5)
+            params = replace(params, nu_diffusion=nu_amp)
+        elif self._diffusion_amplified_until_step > 0 and state.step >= self._diffusion_amplified_until_step:
+            self._diffusion_amplified_until_step = 0
+        return params
 
-        # Apply faction action; Phase 4: exhaustion += suppression_intensity**2
+    def _apply_faction_action(
+        self,
+        state: RegimeState,
+        action: int,
+        params: SystemParameters,
+    ) -> RegimeState:
+        """Decode action, apply it, and handle suppression exhaustion cost."""
         faction_idx = action // self._n_action_types
         action_type = ActionType(action % self._n_action_types)
         intensity = 0.08
-        suppression_intensity = intensity if action_type == ActionType.SUPPRESSION else 0.0
+
         agent_action = Action(
             action_type=action_type,
             actor_idx=0,
@@ -278,153 +344,191 @@ class SurvivalRegimeEnv(gym.Env):
             agent_id="survival_agent",
         )
         state = apply_action(state, agent_action)
-        state = recompute_system_state(state, step_params)
-        if suppression_intensity > 0:
-            exh = state.system.exhaustion
-            new_exh = min(1.0, exh + suppression_intensity ** 2)
+        state = recompute_system_state(state, params)
+
+        if action_type == ActionType.SUPPRESSION:
+            new_exh = min(1.0, state.system.exhaustion + _SUPPRESSION_EXH_COST)
             new_sys = state.system.__class__(
-                legitimacy=state.system.legitimacy,
-                cohesion=state.system.cohesion,
-                fragmentation=state.system.fragmentation,
-                instability=state.system.instability,
-                mobilization=state.system.mobilization,
-                repression=state.system.repression,
-                elite_alignment=state.system.elite_alignment,
-                volatility=state.system.volatility,
-                exhaustion=new_exh,
-                state_gdp=state.system.state_gdp,
-                pillars=state.system.pillars,
+                **{**state.system.to_dict(), "exhaustion": new_exh}
             )
             state = state.copy_with_system(new_sys)
-        state = rk4_step(state, step_params)
-        state = check_and_apply_events(state, step_params)
 
-        # Shock injection (Phase 4: returns shock_info for instability_counter)
+        return state
+
+    def _process_spatial_dynamics(
+        self,
+        state: RegimeState,
+        params: SystemParameters,
+    ) -> Tuple[RegimeState, int]:
+        """Handle shocks, province tipping, domino effects. Returns (state, n_critical)."""
+        # Shock injection
         state, shock_applied, shock_info = maybe_inject_shock(
             state, self._current_params, self._rng,
             shock_prob=self.config.shock_prob_per_step,
         )
         if shock_applied:
-            state = recompute_system_state(state, step_params)
+            state = recompute_system_state(state, params)
             prov_bump = shock_info.get("instability_counter_province")
-            if prov_bump is not None and self._province_instability_counter is not None and 0 <= prov_bump < len(self._province_instability_counter):
+            if (
+                prov_bump is not None
+                and self._province_instability_counter is not None
+                and 0 <= prov_bump < len(self._province_instability_counter)
+            ):
                 self._province_instability_counter[prov_bump] += 1
 
-        # Phase 4: province critical tracking and domino
-        geo = get_geography_summary(state.hierarchical, self._current_params) if state.hierarchical else {}
-        province_unrest_means = geo.get("province_unrest_means", [])
-        n_p = len(province_unrest_means)
-        if n_p > 0 and self._consecutive_high_unrest is not None and self._province_critical is not None:
-            for p in range(min(n_p, len(self._consecutive_high_unrest))):
-                if province_unrest_means[p] > UNREST_CRITICAL_THRESHOLD:
-                    self._consecutive_high_unrest[p] += 1
-                else:
-                    self._consecutive_high_unrest[p] = 0
-                self._province_critical[p] = 1 if self._consecutive_high_unrest[p] >= CONSECUTIVE_STEPS_FOR_CRITICAL else 0
+        # Province tipping
+        n_critical = self._update_province_critical(state)
+
+        # Domino effects
+        n_p = len(state.hierarchical.province_of_district.tolist() and
+                   self._province_critical[:self._n_provinces]) if state.hierarchical else 0
+        if state.hierarchical is not None:
+            n_p = state.hierarchical.n_provinces
             state = apply_domino_effects(
-                state, self._province_critical,
+                state,
+                self._province_critical,
                 self._province_adjacency[:n_p, :n_p],
                 self._province_weight[:n_p, :n_p],
-                step_params,
+                params,
             )
-            n_critical = int(np.sum(self._province_critical[:n_p]))
             if n_critical >= 2:
                 state = apply_national_shock(state)
-                state = recompute_system_state(state, step_params)
-            for p in range(n_p):
-                if not self._province_critical[p]:
-                    continue
-                if state.hierarchical is not None and is_bridge_province(p, state.hierarchical):
-                    self._diffusion_amplified_until_step = state.step + 5
-                    vol = min(1.0, state.system.volatility + 0.15)
-                    new_sys = state.system.__class__(
-                        legitimacy=state.system.legitimacy,
-                        cohesion=state.system.cohesion,
-                        fragmentation=state.system.fragmentation,
-                        instability=state.system.instability,
-                        mobilization=state.system.mobilization,
-                        repression=state.system.repression,
-                        elite_alignment=state.system.elite_alignment,
-                        volatility=vol,
-                        exhaustion=state.system.exhaustion,
-                        state_gdp=state.system.state_gdp,
-                        pillars=state.system.pillars,
-                    )
-                    state = state.copy_with_system(new_sys)
-                    break
+                state = recompute_system_state(state, params)
+            state = self._handle_bridge_provinces(state, n_p)
 
-        # Phase 4: exhaustion nonlinearity (admin decay, unrest drift)
-        state = apply_exhaustion_admin_decay(state, step_params)
+        return state, n_critical
+
+    def _update_province_critical(self, state: RegimeState) -> int:
+        """Track consecutive high-unrest steps per province; return n_critical."""
+        if state.hierarchical is None or self._consecutive_high_unrest is None:
+            return 0
+        geo = get_geography_summary(state.hierarchical, self._current_params)
+        province_unrest_means = geo.get("province_unrest_means", [])
+        n_p = len(province_unrest_means)
+        for p in range(min(n_p, len(self._consecutive_high_unrest))):
+            if province_unrest_means[p] > UNREST_CRITICAL_THRESHOLD:
+                self._consecutive_high_unrest[p] += 1
+            else:
+                self._consecutive_high_unrest[p] = 0
+            self._province_critical[p] = (
+                1 if self._consecutive_high_unrest[p] >= CONSECUTIVE_STEPS_FOR_CRITICAL else 0
+            )
+        return int(np.sum(self._province_critical[:n_p]))
+
+    def _handle_bridge_provinces(self, state: RegimeState, n_p: int) -> RegimeState:
+        """Amplify diffusion and volatility if a critical bridge province is detected."""
+        for p in range(n_p):
+            if not self._province_critical[p]:
+                continue
+            if state.hierarchical is not None and is_bridge_province(p, state.hierarchical):
+                self._diffusion_amplified_until_step = state.step + 5
+                vol = min(1.0, state.system.volatility + 0.15)
+                new_sys = state.system.__class__(
+                    **{**state.system.to_dict(), "volatility": vol}
+                )
+                return state.copy_with_system(new_sys)
+        return state
+
+    def _apply_exhaustion_effects(
+        self, state: RegimeState, params: SystemParameters
+    ) -> RegimeState:
+        """Admin decay and unrest drift under high exhaustion."""
+        state = apply_exhaustion_admin_decay(state, params)
         state = apply_exhaustion_unrest_drift(state)
         if state.hierarchical is not None:
-            state = recompute_system_state(state, step_params)
+            state = recompute_system_state(state, params)
+        return state
 
-        self._state = state
+    def _get_geo(self, state: RegimeState) -> Dict[str, Any]:
+        """Fetch geography summary once per step."""
+        if state.hierarchical is not None:
+            return get_geography_summary(state.hierarchical, self._current_params)
+        return {}
 
-        # Survival reward
+    def _compute_survival_signals(
+        self, state: RegimeState, geo: Dict[str, Any]
+    ) -> Tuple[float, float, float, float]:
+        """Compute hazard, EWI, exhaustion growth, volatility spike."""
         exh = state.system.exhaustion
         vol = state.system.volatility
-        exh_growth = exhaustion_growth_rate(exh, self._prev_exhaustion, step_params.dt)
+
+        exh_growth = exhaustion_growth_rate(exh, self._prev_exhaustion,
+                                            self._current_params.dt)
         vol_spike = volatility_spike_indicator(vol, self._prev_volatility, threshold=0.08)
         self._prev_exhaustion = exh
         self._prev_volatility = vol
 
-        # Phase 4: hazard with nonlinear unrest and clustering amplification
-        geo_final = get_geography_summary(state.hierarchical, self._current_params) if state.hierarchical else {}
-        unrest_mean = float(np.mean(geo_final.get("province_unrest_means", [0.0]))) if geo_final.get("province_unrest_means") else 0.0
-        clustering = geo_final.get("clustering_index", 0.0)
-        hazard = compute_hazard(state, HazardParameters(), unrest_mean=unrest_mean, clustering_index=clustering)
-        self._peak_hazard = max(self._peak_hazard, hazard)
+        unrest_mean = float(np.mean(geo.get("province_unrest_means", [0.0]))) \
+            if geo.get("province_unrest_means") else 0.0
+        clustering = geo.get("clustering_index", 0.0)
 
-        # EWI for collapse (EWI > 0.8 for 5 consecutive steps)
-        ewi = early_warning_index(state, unrest_variance=geo_final.get("unrest_variance", 0.0), clustering_index=clustering, exhaustion_growth_rate=exh_growth)
+        hazard = compute_hazard(state, HazardParameters(),
+                                unrest_mean=unrest_mean, clustering_index=clustering)
+
+        ewi = early_warning_index(
+            state,
+            unrest_variance=geo.get("unrest_variance", 0.0),
+            clustering_index=clustering,
+            exhaustion_growth_rate=exh_growth,
+        )
+        return hazard, ewi, exh_growth, vol_spike
+
+    def _update_ewi_history(self, ewi: float) -> None:
+        """Maintain a 5-step rolling EWI history."""
         self._ewi_history.append(ewi)
         if len(self._ewi_history) > 5:
             self._ewi_history.pop(0)
-        ewi_critical_5 = (len(self._ewi_history) == 5 and all(x > 0.8 for x in self._ewi_history))
 
-        n_critical = int(np.sum(self._province_critical[:n_p])) if n_p and self._province_critical is not None else 0
+    def _compute_step_reward(
+        self,
+        hazard: float,
+        exh_growth: float,
+        vol_spike: float,
+        n_critical: int,
+        step: int,
+    ) -> float:
+        """R = α*exp(-hazard) - 0.5*n_critical - β*hazard/step - γ*|exh_growth| - δ*clustering - ε*spike."""
+        r = self.config.alpha_survival * float(np.exp(-hazard))
+        r -= 0.5 * n_critical
+        r -= self.config.beta_peak_hazard * (hazard / max(1, step))
+        r -= self.config.gamma_exh_acceleration * min(1.0, abs(exh_growth) * 10.0)
+        r -= self.config.epsilon_volatility_spike * vol_spike
+        return r
 
-        # Phase 4 reward: R += α*exp(-hazard) - 0.5*n_critical - other penalties
-        step_reward = self.config.alpha_survival * float(np.exp(-hazard))
-        step_reward -= 0.5 * n_critical
-        step_reward -= self.config.beta_peak_hazard * (hazard / max(1, state.step))
-        step_reward -= self.config.gamma_exh_acceleration * min(1.0, abs(exh_growth) * 10.0)
-        step_reward -= self.config.delta_cluster_intensity * clustering * 0.1
-        step_reward -= self.config.epsilon_volatility_spike * vol_spike
-
-        # Phase 4 collapse: hazard > 1.2, 3+ critical, exhaustion > 0.9, or EWI > 0.8 for 5 steps
-        terminated = (
+    def _check_termination(
+        self, hazard: float, n_critical: int, state: RegimeState
+    ) -> bool:
+        """Collapse conditions: hazard spike, critical mass, exhaustion, or sustained EWI."""
+        ewi_critical_5 = (
+            len(self._ewi_history) == 5
+            and all(x > 0.8 for x in self._ewi_history)
+        )
+        return (
             hazard > 1.2
             or n_critical >= 3
             or state.system.exhaustion > 0.9
             or ewi_critical_5
         )
-        truncated = state.step >= self._current_params.max_steps and not terminated
 
-        info = self._get_info()
-        info["peak_hazard"] = self._peak_hazard
-        info["shock_applied"] = shock_applied
-        info["survival_steps"] = state.step
-        info["n_critical_provinces"] = n_critical
-
-        return self._get_obs(), float(step_reward), terminated, truncated, info
+    # ------------------------------------------------------------------ #
+    # Observation                                                          #
+    # ------------------------------------------------------------------ #
 
     def _get_obs(self) -> NDArray[np.float32]:
-        """Compressed spatial observation: no full district state."""
+        """Compressed spatial observation: regime macro + province summary + signals."""
         assert self._state is not None
         sys = self._state.system
-        # Regime macro (10)
+
         regime = np.array([
             sys.legitimacy, sys.cohesion, sys.fragmentation, sys.instability,
             sys.mobilization, sys.repression, sys.elite_alignment,
             sys.volatility, sys.exhaustion, sys.state_gdp,
         ], dtype=np.float32)
 
-        # Province summary (MAX_PROVINCES * 3), padded
         province_unrest = np.zeros(MAX_PROVINCES, dtype=np.float32)
         province_gdp = np.zeros(MAX_PROVINCES, dtype=np.float32)
         province_admin = np.zeros(MAX_PROVINCES, dtype=np.float32)
+        geo: Dict[str, Any] = {}
         if self._state.hierarchical is not None:
             geo = get_geography_summary(self._state.hierarchical, self._current_params)
             n_p = len(geo["province_unrest_means"])
@@ -432,8 +536,6 @@ class SurvivalRegimeEnv(gym.Env):
             province_gdp[:n_p] = geo["province_gdp_means"]
             province_admin[:n_p] = geo["province_admin_means"]
 
-        # Early warning, hazard amplification, exhaustion growth
-        geo = get_geography_summary(self._state.hierarchical, self._current_params) if self._state.hierarchical else {}
         unrest_var = geo.get("unrest_variance", 0.0)
         clustering = geo.get("clustering_index", 0.0)
         exh_growth = exhaustion_growth_rate(
@@ -447,16 +549,9 @@ class SurvivalRegimeEnv(gym.Env):
             exhaustion_growth_rate=exh_growth,
         )
         hazard_amp = geo.get("hazard_amplification", 1.0)
-        ewi_arr = np.array([ewi], dtype=np.float32)
-        hazard_amp_arr = np.array([min(1.0, hazard_amp)], dtype=np.float32)
-        exh_growth_arr = np.array([np.clip((exh_growth + 0.05) / 0.1, 0.0, 1.0)], dtype=np.float32)
 
-        # Top-k unstable provinces (values, not indices)
         top_k_vals = np.zeros(TOP_K_UNSTABLE, dtype=np.float32)
         if self._state.hierarchical is not None:
-            from ..core.hierarchical_obs import top_k_unstable_districts
-            _, vals = top_k_unstable_districts(self._state.hierarchical, k=TOP_K_UNSTABLE)
-            # By province: use province unrest means and take top k provinces
             prov_means = geo.get("province_unrest_means", [])
             if prov_means:
                 sorted_provinces = np.argsort(prov_means)[::-1][:TOP_K_UNSTABLE]
@@ -466,15 +561,19 @@ class SurvivalRegimeEnv(gym.Env):
         obs = np.concatenate([
             regime,
             province_unrest, province_gdp, province_admin,
-            ewi_arr, hazard_amp_arr, exh_growth_arr,
+            np.array([ewi], dtype=np.float32),
+            np.array([min(1.0, hazard_amp)], dtype=np.float32),
+            np.array([np.clip((exh_growth + 0.05) / 0.1, 0.0, 1.0)], dtype=np.float32),
             top_k_vals,
-        ], axis=0)
+        ])
         return obs.astype(np.float32)
 
     def _get_info(self) -> Dict[str, Any]:
         assert self._state is not None
         crisis = classify(self._state, ClassifierThresholds())
-        geo = get_geography_summary(self._state.hierarchical, self._current_params) if self._state.hierarchical else {}
+        geo = get_geography_summary(
+            self._state.hierarchical, self._current_params
+        ) if self._state.hierarchical else {}
         return {
             "step": self._state.step,
             "crisis_level": crisis.name,

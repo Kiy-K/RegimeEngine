@@ -1,411 +1,128 @@
 {
-    "summary": {
-        "mean_survival": 444.02,
-        "std_survival": 107.93748005211167,
-        "mean_peak_hazard": 0.05865687192541309,
-        "mean_final_exhaustion": 0.3379404144602114,
-        "collapse_rate": 0.32
+  "summary": {
+    "n_episodes": 5,
+    "survival_time": {
+      "mean": 438.2,
+      "ci_low": 345.4,
+      "ci_high": 496.8,
+      "std": 91.17982232928512
     },
-    "episodes": [
-        {
-            "episode": 1,
-            "survival_time": 464,
-            "peak_hazard": 0.07358113795636151,
-            "final_exhaustion": 0.6507933166248199,
-            "mean_cluster_intensity": 0.24301546713384042,
-            "collapse_flag": true
-        },
-        {
-            "episode": 2,
-            "survival_time": 500,
-            "peak_hazard": 0.04877708924475643,
-            "final_exhaustion": 0.06568719688901922,
-            "mean_cluster_intensity": 0.14689226815658446,
-            "collapse_flag": false
-        },
-        {
-            "episode": 3,
-            "survival_time": 173,
-            "peak_hazard": 0.016063279042002068,
-            "final_exhaustion": 0.891010128240796,
-            "mean_cluster_intensity": 0.22661726076334823,
-            "collapse_flag": true
-        },
-        {
-            "episode": 4,
-            "survival_time": 500,
-            "peak_hazard": 0.031301056100090506,
-            "final_exhaustion": 0.17737110727911928,
-            "mean_cluster_intensity": 0.29031399385584467,
-            "collapse_flag": false
-        },
-        {
-            "episode": 5,
-            "survival_time": 500,
-            "peak_hazard": 0.035722340149997825,
-            "final_exhaustion": 0.11745122498278726,
-            "mean_cluster_intensity": 0.20152767141443972,
-            "collapse_flag": false
-        },
-        {
-            "episode": 6,
-            "survival_time": 500,
-            "peak_hazard": 0.04395991910184331,
-            "final_exhaustion": 0.002839304531322457,
-            "mean_cluster_intensity": 0.2428635721976018,
-            "collapse_flag": false
-        },
-        {
-            "episode": 7,
-            "survival_time": 500,
-            "peak_hazard": 0.07580970332804991,
-            "final_exhaustion": 0.2729547140290456,
-            "mean_cluster_intensity": 0.2791334182541259,
-            "collapse_flag": false
-        },
-        {
-            "episode": 8,
-            "survival_time": 500,
-            "peak_hazard": 0.18679679115612394,
-            "final_exhaustion": 0.037072512611487106,
-            "mean_cluster_intensity": 0.36882612459764674,
-            "collapse_flag": false
-        },
-        {
-            "episode": 9,
-            "survival_time": 500,
-            "peak_hazard": 0.028734457485437667,
-            "final_exhaustion": 0.09746951379348126,
-            "mean_cluster_intensity": 0.2519580059364517,
-            "collapse_flag": false
-        },
-        {
-            "episode": 10,
-            "survival_time": 500,
-            "peak_hazard": 0.024524322222813918,
-            "final_exhaustion": 0.10710821286632836,
-            "mean_cluster_intensity": 0.16182411085975273,
-            "collapse_flag": false
-        },
-        {
-            "episode": 11,
-            "survival_time": 500,
-            "peak_hazard": 0.05813210301362098,
-            "final_exhaustion": 0.248785181557856,
-            "mean_cluster_intensity": 0.21364418402364485,
-            "collapse_flag": false
-        },
-        {
-            "episode": 12,
-            "survival_time": 500,
-            "peak_hazard": 0.0796814249687086,
-            "final_exhaustion": 0.1674342204982398,
-            "mean_cluster_intensity": 0.24246207862311348,
-            "collapse_flag": false
-        },
-        {
-            "episode": 13,
-            "survival_time": 500,
-            "peak_hazard": 0.06493255074188226,
-            "final_exhaustion": 0.06073420211089915,
-            "mean_cluster_intensity": 0.1590469559282406,
-            "collapse_flag": false
-        },
-        {
-            "episode": 14,
-            "survival_time": 500,
-            "peak_hazard": 0.05159280209669283,
-            "final_exhaustion": 0.034386101259759584,
-            "mean_cluster_intensity": 0.36172013012346127,
-            "collapse_flag": false
-        },
-        {
-            "episode": 15,
-            "survival_time": 500,
-            "peak_hazard": 0.12861804508983385,
-            "final_exhaustion": 0.15234932934413384,
-            "mean_cluster_intensity": 0.38142720643771555,
-            "collapse_flag": false
-        },
-        {
-            "episode": 16,
-            "survival_time": 500,
-            "peak_hazard": 0.021730800596968126,
-            "final_exhaustion": 0.1416595578071247,
-            "mean_cluster_intensity": 0.2268037206062872,
-            "collapse_flag": false
-        },
-        {
-            "episode": 17,
-            "survival_time": 500,
-            "peak_hazard": 0.09730025810470737,
-            "final_exhaustion": 0.048975396533197754,
-            "mean_cluster_intensity": 0.26300813287030456,
-            "collapse_flag": false
-        },
-        {
-            "episode": 18,
-            "survival_time": 500,
-            "peak_hazard": 0.03535561286747997,
-            "final_exhaustion": 0.10674306316070052,
-            "mean_cluster_intensity": 0.17866086298715772,
-            "collapse_flag": false
-        },
-        {
-            "episode": 19,
-            "survival_time": 500,
-            "peak_hazard": 0.10970693214577194,
-            "final_exhaustion": 0.07245386421314254,
-            "mean_cluster_intensity": 0.31318273475095326,
-            "collapse_flag": false
-        },
-        {
-            "episode": 20,
-            "survival_time": 379,
-            "peak_hazard": 0.0567023343923176,
-            "final_exhaustion": 0.9439871116698068,
-            "mean_cluster_intensity": 0.29367081247156307,
-            "collapse_flag": true
-        },
-        {
-            "episode": 21,
-            "survival_time": 500,
-            "peak_hazard": 0.033686670648577895,
-            "final_exhaustion": 0.07410380256140084,
-            "mean_cluster_intensity": 0.19990315327882702,
-            "collapse_flag": false
-        },
-        {
-            "episode": 22,
-            "survival_time": 500,
-            "peak_hazard": 0.044624809740855996,
-            "final_exhaustion": 0.10659597062045685,
-            "mean_cluster_intensity": 0.2854143304024253,
-            "collapse_flag": false
-        },
-        {
-            "episode": 23,
-            "survival_time": 500,
-            "peak_hazard": 0.05697200303292549,
-            "final_exhaustion": 0.18021173507371882,
-            "mean_cluster_intensity": 0.14238766153651908,
-            "collapse_flag": false
-        },
-        {
-            "episode": 24,
-            "survival_time": 374,
-            "peak_hazard": 0.0672762660949985,
-            "final_exhaustion": 0.9536330893887837,
-            "mean_cluster_intensity": 0.29403798038625084,
-            "collapse_flag": true
-        },
-        {
-            "episode": 25,
-            "survival_time": 500,
-            "peak_hazard": 0.1503618764345745,
-            "final_exhaustion": 0.22423665262241105,
-            "mean_cluster_intensity": 0.25967809355238186,
-            "collapse_flag": false
-        },
-        {
-            "episode": 26,
-            "survival_time": 500,
-            "peak_hazard": 0.08798780456080907,
-            "final_exhaustion": 0.06708204457743286,
-            "mean_cluster_intensity": 0.1929768179886121,
-            "collapse_flag": false
-        },
-        {
-            "episode": 27,
-            "survival_time": 481,
-            "peak_hazard": 0.033078048060393356,
-            "final_exhaustion": 0.9520574030532634,
-            "mean_cluster_intensity": 0.1830996234629659,
-            "collapse_flag": true
-        },
-        {
-            "episode": 28,
-            "survival_time": 274,
-            "peak_hazard": 0.019073644330520566,
-            "final_exhaustion": 0.9299384434627745,
-            "mean_cluster_intensity": 0.2050201670383658,
-            "collapse_flag": true
-        },
-        {
-            "episode": 29,
-            "survival_time": 364,
-            "peak_hazard": 0.04487418887766826,
-            "final_exhaustion": 0.9200750671328785,
-            "mean_cluster_intensity": 0.2688324043325838,
-            "collapse_flag": true
-        },
-        {
-            "episode": 30,
-            "survival_time": 115,
-            "peak_hazard": 0.03794088501229864,
-            "final_exhaustion": 0.5305402628998579,
-            "mean_cluster_intensity": 0.27496040423852464,
-            "collapse_flag": true
-        },
-        {
-            "episode": 31,
-            "survival_time": 500,
-            "peak_hazard": 0.08778548902925672,
-            "final_exhaustion": 0.1339481643534225,
-            "mean_cluster_intensity": 0.21729173184849787,
-            "collapse_flag": false
-        },
-        {
-            "episode": 32,
-            "survival_time": 470,
-            "peak_hazard": 0.08920478846209311,
-            "final_exhaustion": 0.4148243397746361,
-            "mean_cluster_intensity": 0.1801920735502904,
-            "collapse_flag": true
-        },
-        {
-            "episode": 33,
-            "survival_time": 215,
-            "peak_hazard": 0.06233703533370061,
-            "final_exhaustion": 0.9524932078788043,
-            "mean_cluster_intensity": 0.17428322655126743,
-            "collapse_flag": true
-        },
-        {
-            "episode": 34,
-            "survival_time": 461,
-            "peak_hazard": 0.044326525757960054,
-            "final_exhaustion": 0.9429589272662325,
-            "mean_cluster_intensity": 0.23135889663715123,
-            "collapse_flag": true
-        },
-        {
-            "episode": 35,
-            "survival_time": 500,
-            "peak_hazard": 0.01871270213358333,
-            "final_exhaustion": 0.15953544471694822,
-            "mean_cluster_intensity": 0.189008312626339,
-            "collapse_flag": false
-        },
-        {
-            "episode": 36,
-            "survival_time": 351,
-            "peak_hazard": 0.04761761636315442,
-            "final_exhaustion": 0.9563666266849178,
-            "mean_cluster_intensity": 0.23161222099777434,
-            "collapse_flag": true
-        },
-        {
-            "episode": 37,
-            "survival_time": 264,
-            "peak_hazard": 0.0362612528949771,
-            "final_exhaustion": 0.9560797771416656,
-            "mean_cluster_intensity": 0.22506429363276265,
-            "collapse_flag": true
-        },
-        {
-            "episode": 38,
-            "survival_time": 500,
-            "peak_hazard": 0.0627337799187016,
-            "final_exhaustion": 0.22262220020324752,
-            "mean_cluster_intensity": 0.3082023972279568,
-            "collapse_flag": false
-        },
-        {
-            "episode": 39,
-            "survival_time": 500,
-            "peak_hazard": 0.09637657683189907,
-            "final_exhaustion": 0.14636331074433095,
-            "mean_cluster_intensity": 0.3352579090112333,
-            "collapse_flag": false
-        },
-        {
-            "episode": 40,
-            "survival_time": 500,
-            "peak_hazard": 0.043076948827461534,
-            "final_exhaustion": 0.07479813052293408,
-            "mean_cluster_intensity": 0.11639781086044951,
-            "collapse_flag": false
-        },
-        {
-            "episode": 41,
-            "survival_time": 185,
-            "peak_hazard": 0.02735159251495846,
-            "final_exhaustion": 0.9350864903221432,
-            "mean_cluster_intensity": 0.36636962176280075,
-            "collapse_flag": true
-        },
-        {
-            "episode": 42,
-            "survival_time": 500,
-            "peak_hazard": 0.022979883560814277,
-            "final_exhaustion": 0.04825088595649459,
-            "mean_cluster_intensity": 0.17256681662302167,
-            "collapse_flag": false
-        },
-        {
-            "episode": 43,
-            "survival_time": 500,
-            "peak_hazard": 0.04590494190179174,
-            "final_exhaustion": 0.057324242886498414,
-            "mean_cluster_intensity": 0.17451378404141846,
-            "collapse_flag": false
-        },
-        {
-            "episode": 44,
-            "survival_time": 500,
-            "peak_hazard": 0.04031081315018201,
-            "final_exhaustion": 0.05695843635607067,
-            "mean_cluster_intensity": 0.2051166479489936,
-            "collapse_flag": false
-        },
-        {
-            "episode": 45,
-            "survival_time": 500,
-            "peak_hazard": 0.07992200975348973,
-            "final_exhaustion": 0.04609019416751557,
-            "mean_cluster_intensity": 0.23134382729456132,
-            "collapse_flag": false
-        },
-        {
-            "episode": 46,
-            "survival_time": 479,
-            "peak_hazard": 0.08013962907737879,
-            "final_exhaustion": 0.10618456721940844,
-            "mean_cluster_intensity": 0.1950984637229107,
-            "collapse_flag": true
-        },
-        {
-            "episode": 47,
-            "survival_time": 152,
-            "peak_hazard": 0.04187308685061393,
-            "final_exhaustion": 0.9078031487330092,
-            "mean_cluster_intensity": 0.20805720828953636,
-            "collapse_flag": true
-        },
-        {
-            "episode": 48,
-            "survival_time": 500,
-            "peak_hazard": 0.07480330497462612,
-            "final_exhaustion": 0.24890990143126068,
-            "mean_cluster_intensity": 0.22899424254496004,
-            "collapse_flag": false
-        },
-        {
-            "episode": 49,
-            "survival_time": 500,
-            "peak_hazard": 0.01710183946150616,
-            "final_exhaustion": 0.19121507807504823,
-            "mean_cluster_intensity": 0.18353462566070514,
-            "collapse_flag": false
-        },
-        {
-            "episode": 50,
-            "survival_time": 500,
-            "peak_hazard": 0.06912462287342319,
-            "final_exhaustion": 0.00346791717994021,
-            "mean_cluster_intensity": 0.20416712719902966,
-            "collapse_flag": false
-        }
-    ]
+    "peak_hazard": {
+      "mean": 0.07989853459123238,
+      "ci_low": 0.037930985474753307,
+      "ci_high": 0.14933690455745238,
+      "std": 0.06826138960214152
+    },
+    "final_exhaustion": {
+      "mean": 0.5696565002284608,
+      "ci_low": 0.24355951856440733,
+      "ci_high": 0.8957534818925141,
+      "std": 0.39098461689299463
+    },
+    "collapse_rate": {
+      "mean": 0.6,
+      "ci_low": 0.2,
+      "ci_high": 1.0,
+      "std": 0.48989794855663565
+    },
+    "mean_cluster_intensity": {
+      "mean": 0.3517140002162015,
+      "ci_low": 0.2631232886919202,
+      "ci_high": 0.4473361869937368,
+      "std": 0.10999722841715898
+    },
+    "collapse_causes": {
+      "province_cascade": 0.3333333333333333,
+      "exhaustion": 0.6666666666666666
+    },
+    "difficulty_by_topology": {
+      "medium": {
+        "mean_survival": 500.0,
+        "collapse_rate": 0.0,
+        "n_episodes": 1
+      },
+      "easy": {
+        "mean_survival": 397.0,
+        "collapse_rate": 1.0,
+        "n_episodes": 3
+      },
+      "hard": {
+        "mean_survival": 500.0,
+        "collapse_rate": 0.0,
+        "n_episodes": 1
+      }
+    },
+    "ewi_analysis": {
+      "mean_ewi_collapsed": 0.2533202496438633,
+      "mean_ewi_survived": 0.229487389042557,
+      "separation": 0.023832860601306294
+    }
+  },
+  "episodes": [
+    {
+      "episode": 1,
+      "seed": 5000,
+      "n_provinces": 7,
+      "survival_time": 500,
+      "peak_hazard": 0.040023432263006524,
+      "final_exhaustion": 0.10209543300330025,
+      "mean_cluster_intensity": 0.24709514424213747,
+      "mean_ewi": 0.20912775938537584,
+      "max_ewi": 0.27896935370069137,
+      "collapse_flag": false,
+      "collapse_cause": "survived"
+    },
+    {
+      "episode": 2,
+      "seed": 5001,
+      "n_provinces": 5,
+      "survival_time": 260,
+      "peak_hazard": 0.06999864317672665,
+      "final_exhaustion": 0.8517834689658531,
+      "mean_cluster_intensity": 0.5380632516782882,
+      "mean_ewi": 0.3154595000966489,
+      "max_ewi": 0.3817667589085219,
+      "collapse_flag": true,
+      "collapse_cause": "province_cascade"
+    },
+    {
+      "episode": 3,
+      "seed": 5002,
+      "n_provinces": 9,
+      "survival_time": 500,
+      "peak_hazard": 0.21413710356980262,
+      "final_exhaustion": 0.08091162892479156,
+      "mean_cluster_intensity": 0.35092042522676253,
+      "mean_ewi": 0.24984701869973816,
+      "max_ewi": 0.3559858795723579,
+      "collapse_flag": false,
+      "collapse_cause": "survived"
+    },
+    {
+      "episode": 4,
+      "seed": 5003,
+      "n_provinces": 6,
+      "survival_time": 447,
+      "peak_hazard": 0.0410589250454986,
+      "final_exhaustion": 0.9050601202176604,
+      "mean_cluster_intensity": 0.3872383150595374,
+      "mean_ewi": 0.254617939768071,
+      "max_ewi": 0.3277709119880735,
+      "collapse_flag": true,
+      "collapse_cause": "exhaustion"
+    },
+    {
+      "episode": 5,
+      "seed": 5004,
+      "n_provinces": 5,
+      "survival_time": 484,
+      "peak_hazard": 0.034274568901127435,
+      "final_exhaustion": 0.9084318500306988,
+      "mean_cluster_intensity": 0.2352528648742818,
+      "mean_ewi": 0.18988330906686984,
+      "max_ewi": 0.2932264864154843,
+      "collapse_flag": true,
+      "collapse_cause": "exhaustion"
+    }
+  ]
 }

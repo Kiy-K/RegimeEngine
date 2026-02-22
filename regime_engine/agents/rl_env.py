@@ -146,6 +146,13 @@ class RegimeEnv(gym.Env):
         self._state: Optional[RegimeState] = None
         self._rng: np.random.Generator = np.random.default_rng(self.params.seed)
 
+    def update_config(self, **kwargs):
+        """Update environment configuration (replaces frozen dataclass)."""
+        from dataclasses import replace
+        valid_kwargs = {k: v for k, v in kwargs.items() if hasattr(self.params, k)}
+        if valid_kwargs:
+            self.params = replace(self.params, **valid_kwargs)
+
     # ------------------------------------------------------------------ #
     # Space descriptions (gymnasium-compatible shapes)                     #
     # ------------------------------------------------------------------ #
@@ -181,10 +188,10 @@ class RegimeEnv(gym.Env):
         """
         if seed is not None:
             super().reset(seed=seed)
-            self._rng = np.random.default_rng(seed)
             import random
             random.seed(seed)
             np.random.seed(seed)
+            self._rng = np.random.default_rng(seed)
 
         factions = create_balanced_factions(self._n_factions)
         placeholder = SystemState.neutral(self.params.n_pillars)
@@ -236,7 +243,7 @@ class RegimeEnv(gym.Env):
         # Apply action impulse THEN integrate THEN shocks
         state_after_action = apply_action(self._state, agent_action)
         state_after_action = recompute_system_state(state_after_action, self.params)
-        integrated = rk4_step(state_after_action, self.params)
+        integrated = rk4_step(state_after_action, self.params, self._rng)
         self._state = check_and_apply_events(integrated, self.params)
 
         reward = self._compute_reward()
