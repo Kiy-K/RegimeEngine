@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+.env
+.idea/
+.vscode/
+*.log
+regime_engine.zip
+docs/
+logs/PPO_1/
+logs/PPO_2/
+# Keep the models but track with LFS
+# logs/ppo_survival/*.zip is tracked by LFS
