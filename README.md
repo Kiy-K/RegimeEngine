@@ -51,8 +51,8 @@ GravitasEngine/
 ## Installation
 
 ```bash
-git clone https://github.com/Kiy-K/RegimeEngine.git
-cd RegimeEngine
+git clone https://github.com/Kiy-K/Gravitas-Engine.git
+cd Gravitas-Engine
 pip install -r requirements.txt
 ```
 
