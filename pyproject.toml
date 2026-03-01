@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "gravitas-engine"
+version = "0.1.0"
+description = "Research-grade governance RL environment with partial observability, media bias, diplomacy, population dynamics, hierarchical actions, and non-linear dynamics."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["reinforcement-learning", "simulation", "governance", "multi-agent"]
+
+dependencies = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "stable-baselines3>=2.2",
+    "torch>=2.0",
+    "tqdm",
+    "rich",
+    "tensorboard>=2.12",
+    "wandb>=0.15",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov",
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+    "hypothesis>=6.80",
+]
+viz = [
+    "seaborn>=0.12",
+    "matplotlib>=3.7",
+]
+all = [
+    "gravitas-engine[train,dev,viz]",
+]
+
+[project.scripts]
+gravitas = "gravitas_engine.cli:main"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", "extensions*"]
+
+[tool.setuptools.package-data]
+gravitas_engine = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "smoke_test.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true

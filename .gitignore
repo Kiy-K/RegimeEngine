@@ -1,17 +1,42 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual environments
 .venv/
 env/
 venv/
 ENV/
 .env
+
+# IDE/Editor
 .idea/
 .vscode/
+
+# Logs and outputs
 *.log
+logs/
+audit_report.json
+evaluation_results.json
+
+# Data and models
+*.pt
+*.pth
+*.h5
+*.npz
 regime_engine.zip
-docs/
-logs/PPO_1/
-logs/PPO_2/
-# Keep the models but track with LFS
+
+# Docs — now tracked for project documentation
+# docs/
+
+# Specific log directories (override general logs/ rule)
+!logs/PPO_1/
+!logs/PPO_2/
+
+# Nuitka build artifacts
+build/
+*.build/
+*.so
+
+# Large files (LFS)
 # logs/ppo_survival/*.zip is tracked by LFS

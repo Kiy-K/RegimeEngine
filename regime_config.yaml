@@ -1,0 +1,190 @@
+# regime_config.yaml — GRAVITAS Regime Configuration
+#
+# Field names in topology/shocks/military/media/reward/episode map DIRECTLY
+# to GravitasParams fields (see regime_engine/core/gravitas_params.py).
+# Nothing here is image-shaped, nothing references external reward scripts —
+# GravitasEnv computes its own reward via gravitas_reward.py.
+
+regimes:
+
+  # ──────────────────────────────────────────────────────────────────────── #
+  # PredatorPrey                                                              #
+  # Dense conflict graph, frequent cascading shocks, adversarial media.      #
+  # Military suppression is tempting but destroys long-term stability.       #
+  # ──────────────────────────────────────────────────────────────────────── #
+  - name: "PredatorPrey"
+    description: "High-conflict topology with frequent cascading shocks. Agent must learn restraint over brute suppression."
+    agents:
+      - name: "governance"
+        policy: "rppo"          # RecurrentPPO — required for partial observability
+
+    topology:
+      n_clusters_min: 7
+      n_clusters_max: 12
+      between_link_prob: 0.40
+      conflict_link_prob: 0.35  # Dense conflict graph → high cascade risk
+
+    shocks:
+      hawkes_base_rate: 0.010   # 2× default — frequent baseline shocks
+      hawkes_alpha: 0.40        # Strong self-excitation
+      hawkes_beta: 0.50         # Moderate decay → shocks cluster in time
+
+    military:
+      military_exh_coeff: 0.14  # Military drains exhaustion faster
+      military_phi_coeff: 0.08  # Military raises fragmentation more aggressively
+      military_tau_cost: 0.07   # Trust erodes faster under occupation
+      max_military_total: 0.70  # Hard cap lower — can't flood every cluster
+
+    media:
+      media_autonomy: 0.60      # High autonomy → propaganda less effective
+      rho_bias: 0.88            # Bias has long memory
+      beta_max_bias: 0.70       # Larger distortion range
+      phi_bias_shock: 0.25      # Shocks amplify bias strongly
+
+    reward:
+      w_stability: 1.00
+      w_fragmentation: 1.20     # Fragmentation is primary threat
+      w_polarization: 1.20
+      w_exhaustion: 1.80        # Exhaustion → total collapse
+      w_resilience: 0.50
+      w_smoothness: 0.30
+      w_unsustainable: 2.50     # Severely punish military over-reliance
+      exhaustion_threshold: 0.55
+
+    episode:
+      max_steps: 600
+
+    training:
+      algo: "rppo"
+      total_timesteps: 800000
+      exhaustion_penalty: 0.20
+      metrics:
+        - "polarization"
+        - "military_load"
+        - "trust"
+        - "fragmentation"
+        - "exhaustion"
+
+  # ──────────────────────────────────────────────────────────────────────── #
+  # CollaborativeBuild                                                        #
+  # Low conflict, resource-focused, cooperative. Rare but severe shocks.     #
+  # INVEST and REFORM dominate; MILITARIZE is occasionally necessary.        #
+  # ──────────────────────────────────────────────────────────────────────── #
+  - name: "CollaborativeBuild"
+    description: "Low-conflict topology. Sustain resource growth and institutional trust across a large cluster network."
+    agents:
+      - name: "governance"
+        policy: "rppo"
+
+    topology:
+      n_clusters_min: 5
+      n_clusters_max: 9
+      between_link_prob: 0.50   # Denser trade network
+      conflict_link_prob: 0.10  # Low conflict
+
+    shocks:
+      hawkes_base_rate: 0.004   # Rare shocks
+      hawkes_alpha: 0.20        # Weak self-excitation
+      hawkes_beta: 0.60         # Fast decay → shocks don't cluster
+
+    military:
+      military_exh_coeff: 0.10  # Default
+      military_phi_coeff: 0.04
+      military_tau_cost: 0.04
+      max_military_total: 0.80
+
+    media:
+      media_autonomy: 0.30      # Lower autonomy → propaganda more effective
+      rho_bias: 0.80
+      beta_max_bias: 0.45
+      phi_bias_shock: 0.15
+
+    reward:
+      w_stability: 1.40         # Stability is primary objective
+      w_fragmentation: 0.60
+      w_polarization: 0.80
+      w_exhaustion: 1.20
+      w_resilience: 1.00        # Build institutions
+      w_smoothness: 0.60
+      w_unsustainable: 1.50
+      exhaustion_threshold: 0.65
+      invest_res_boost: 0.20    # INVEST is more effective in this regime
+
+    episode:
+      max_steps: 800
+
+    training:
+      algo: "rppo"
+      total_timesteps: 600000
+      exhaustion_penalty: 0.10
+      metrics:
+        - "polarization"
+        - "trust"
+        - "coherence"
+
+  # ──────────────────────────────────────────────────────────────────────── #
+  # WaterlooNations                                                             #
+  # 5 Great Powers (France, Britain, Prussia, Austria, Russia) with population   #
+  # dynamics, conscription, and custom shocks (e.g., BritishNavalBlockade).      #
+  # ──────────────────────────────────────────────────────────────────────── #
+  - name: "waterloo_nations"
+    description: "Napoleonic Wars simulation with 5 Great Powers, population dynamics, and custom shocks."
+    agents:
+      - name: "governance"
+        policy: "rppo"
+
+    topology:
+      n_clusters_min: 5
+      n_clusters_max: 5
+
+    shocks:
+      hawkes_base_rate: 0.008
+      hawkes_alpha: 0.35
+      hawkes_beta: 0.45
+
+    military:
+      military_exh_coeff: 0.12
+      military_phi_coeff: 0.06
+      military_tau_cost: 0.05
+      max_military_total: 0.65
+
+    media:
+      media_autonomy: 0.50
+      rho_bias: 0.85
+      beta_max_bias: 0.60
+      phi_bias_shock: 0.20
+
+    reward:
+      w_stability: 1.20
+      w_fragmentation: 1.30
+      w_polarization: 1.10
+      w_exhaustion: 1.50
+      w_resilience: 0.80
+      w_smoothness: 0.40
+      w_unsustainable: 2.00
+      exhaustion_threshold: 0.50
+
+    episode:
+      max_steps: 1000
+
+    training:
+      algo: "rppo"
+      total_timesteps: 1000000
+      exhaustion_penalty: 0.15
+      metrics:
+        - "polarization"
+        - "military_load"
+        - "trust"
+        - "fragmentation"
+        - "exhaustion"
+        - "pop_satisfaction"
+        - "pop_inequality"
+
+# Global defaults (used when a regime section doesn't override)
+defaults:
+  log_dir: "logs/"
+  eval_episodes: 30
+  device: "cpu"
+  algo: "rppo"
+  checkpoint_freq: 50000
+  eval_freq: 50000

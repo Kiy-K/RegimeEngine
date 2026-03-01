@@ -1,0 +1,442 @@
+# Battle of Moscow (1941): Partisan Warfare & Economic Logistics
+# ================================================================
+# Simulates Operation Typhoon and the Soviet winter counteroffensive:
+#   Oct 2, 1941 – Jan 7, 1942
+#   German Army Group Center (von Bock) vs. Soviet Western Front (Zhukov)
+#
+# 9 sectors representing key operational areas:
+#   0  Moscow City Center        — Soviet capital, factories, high resources
+#   1  Yaroslavl Rail Hub        — Soviet supply node, connects reserves
+#   2  Tula Defense Line         — Southern fortified position, industrial
+#   3  Soviet Strategic Reserve  — Deep reserves east of Moscow
+#   4  Bryansk Forest            — Partisan stronghold, contested wilderness
+#   5  Vyazma Rail Hub           — Axis supply depot, partisan target
+#   6  Smolensk Forward Base     — German staging area, Army Group HQ
+#   7  Kalinin Northern Front    — Northern pincer toward Moscow
+#   8  Klin-Solnechnogorsk       — Closest Axis approach to Moscow
+#
+# Key features beyond Stalingrad:
+#   - Logistics links: graph-based supply network with sabotage mechanics
+#   - Terrain types: forest, urban, fortified, rail, open (nonlinear combat)
+#   - Partisan warfare: sabotage, ambush, recruitment from contested zones
+#   - Economic production/consumption per sector
+#   - Seasonal effects: winter degrades Axis throughput
+
+# ── Training config ─────────────────────────────────────────────────────── #
+training:
+  total_timesteps: 3000000
+  n_envs: 8
+  mode: curriculum
+  use_subproc: true
+  population: false
+
+# ── GravitasParams overrides ─────────────────────────────────────────────── #
+params:
+  # Topology
+  n_clusters_min: 9
+  n_clusters_max: 9
+  dt: 0.01
+
+  # Stability dynamics — extended front, not urban ruins
+  alpha_sigma: 0.06       # faster recovery than Stalingrad (more rear area)
+  nu_sigma:    0.07       # moderate spatial diffusion
+  beta_sigma:  1.40       # hazard suppresses stability (lower than Stalingrad)
+
+  # Resource dynamics — logistics-focused
+  alpha_res:       0.05   # moderate resource recovery (factories running)
+  hazard_res_cost: 0.20   # combat burns resources
+
+  # Military dynamics — mobile warfare + partisan disruption
+  max_military_total:      0.85   # not total war yet (Operation Typhoon phase)
+  military_exh_coeff:      0.40   # advancing exhausts troops
+  military_decay:          0.025  # troops degrade faster in winter
+  military_hazard_reduction: 0.50 # field warfare: less effective than urban
+  military_sigma_boost:    0.20   # garrison provides some stability
+  military_tau_cost:       0.15   # occupation erodes trust
+  military_phi_coeff:      0.10   # moderate fragmentation from military
+
+  # Trust / polarization — ideological (partisan recruitment depends on trust)
+  tau_decay:            0.03   # trust erodes under occupation
+  alpha_pol:            0.10   # polarization builds
+  beta_pol:             0.07   # depolarization somewhat faster than Stalingrad
+  propaganda_pol_coeff: 0.18   # propaganda effect
+  psi_propaganda_cost:  0.12   # coherence cost
+
+  # Exhaustion — advancing German army, Russian winter
+  alpha_exh:  0.07   # exhaustion builds steadily
+  beta_exh:   0.04   # slightly faster recovery (not encircled)
+
+  # Hawkes shock process — partisan raids + winter storms
+  hawkes_base_rate: 0.035
+  hawkes_alpha:     0.18    # moderate self-excitation
+  hawkes_beta:      0.35    # faster decay than Stalingrad
+  shock_pareto_alpha: 2.2   # slightly lighter tails
+  shock_pareto_xmin:  0.10
+
+  # Diplomacy — inter-sector coordination
+  nu_alliance:      0.05
+  nu_res_alliance:  0.05    # logistics alliance sharing more important
+  alpha_hostility:  0.04    # partisan territory is hostile
+  alliance_decay:   0.005
+  diplomacy_shift:  0.10
+
+  # Media / propaganda
+  rho_bias:      0.88
+  beta_max_bias: 0.55
+  media_autonomy: 0.30
+
+  # Reward weights
+  w_stability:     1.40
+  w_fragmentation: 0.60
+  w_polarization:  0.80
+  w_exhaustion:    1.80    # still important but less than Stalingrad
+  w_resilience:    0.60
+  w_smoothness:    0.25
+  w_unsustainable: 2.20
+
+  # Termination
+  collapse_exhaustion:    0.92
+  collapse_hazard_mean:   1.70
+  collapse_polarization:  0.95
+  collapse_fragmentation: 0.93
+
+  # Episode length — ~100 days of fighting
+  max_steps: 500
+
+# ── Operational sectors ──────────────────────────────────────────────────── #
+sectors:
+  - id: 0
+    name: MoscowCityCenter
+    side: Soviet
+    terrain: urban
+    description: "Soviet capital. Factories, government, dense population."
+    initial_state:
+      sigma:    0.60
+      hazard:   0.15
+      resource: 0.80
+      military: 0.50
+      trust:    0.70
+      polar:    0.30
+    production: 0.05
+    consumption: 0.03
+
+  - id: 1
+    name: YaroslavlRailHub
+    side: Soviet
+    terrain: rail
+    description: "Critical northern rail junction. Connects Moscow to reserves."
+    initial_state:
+      sigma:    0.55
+      hazard:   0.10
+      resource: 0.85
+      military: 0.35
+      trust:    0.60
+      polar:    0.20
+    production: 0.03
+    consumption: 0.01
+
+  - id: 2
+    name: TulaDefenseLine
+    side: Soviet
+    terrain: fortified
+    description: "Southern industrial city. Fortified defense line blocks southern approach."
+    initial_state:
+      sigma:    0.50
+      hazard:   0.30
+      resource: 0.60
+      military: 0.55
+      trust:    0.55
+      polar:    0.35
+    production: 0.04
+    consumption: 0.02
+
+  - id: 3
+    name: SovietStrategicReserve
+    side: Soviet
+    terrain: open
+    description: "Deep reserves east of Moscow. Fresh Siberian divisions arriving."
+    initial_state:
+      sigma:    0.70
+      hazard:   0.05
+      resource: 0.75
+      military: 0.60
+      trust:    0.65
+      polar:    0.15
+    production: 0.02
+    consumption: 0.01
+
+  - id: 4
+    name: BryanskForest
+    side: Contested
+    terrain: forest
+    description: "Dense forests south of Moscow. Partisan stronghold. Low stability."
+    initial_state:
+      sigma:    0.30
+      hazard:   0.25
+      resource: 0.25
+      military: 0.10
+      trust:    0.40
+      polar:    0.50
+    production: 0.01
+    consumption: 0.005
+
+  - id: 5
+    name: VyazmaRailHub
+    side: Axis
+    terrain: rail
+    description: "German supply depot. Critical logistics node. Partisan sabotage target."
+    initial_state:
+      sigma:    0.65
+      hazard:   0.20
+      resource: 0.85
+      military: 0.45
+      trust:    0.30
+      polar:    0.40
+    production: 0.02
+    consumption: 0.04
+
+  - id: 6
+    name: SmolenskForwardBase
+    side: Axis
+    terrain: open
+    description: "Army Group Center HQ. Staging area for Operation Typhoon."
+    initial_state:
+      sigma:    0.70
+      hazard:   0.10
+      resource: 0.70
+      military: 0.55
+      trust:    0.25
+      polar:    0.35
+    production: 0.02
+    consumption: 0.03
+
+  - id: 7
+    name: KalininNorthernFront
+    side: Axis
+    terrain: open
+    description: "Northern pincer. 3rd Panzer Group advancing toward Moscow."
+    initial_state:
+      sigma:    0.55
+      hazard:   0.30
+      resource: 0.50
+      military: 0.60
+      trust:    0.20
+      polar:    0.45
+    production: 0.01
+    consumption: 0.03
+
+  - id: 8
+    name: KlinSolnechnogorsk
+    side: Axis
+    terrain: open
+    description: "Closest Axis approach to Moscow. 30km from the Kremlin."
+    initial_state:
+      sigma:    0.50
+      hazard:   0.35
+      resource: 0.45
+      military: 0.65
+      trust:    0.15
+      polar:    0.50
+    production: 0.00
+    consumption: 0.04
+
+# ── Logistics network (graph edges with capacity) ────────────────────────── #
+# Each link represents a rail/road connection.
+# capacity: max resource flow per step through this link
+# vulnerability: base probability of sabotage success on this link
+logistics_links:
+  - {from: 0, to: 1, capacity: 0.15, vulnerability: 0.05}   # Moscow ↔ Yaroslavl (secure)
+  - {from: 0, to: 2, capacity: 0.12, vulnerability: 0.08}   # Moscow ↔ Tula
+  - {from: 0, to: 8, capacity: 0.08, vulnerability: 0.15}   # Moscow ↔ Klin (threatened)
+  - {from: 1, to: 3, capacity: 0.20, vulnerability: 0.03}   # Yaroslavl ↔ Reserves (deep)
+  - {from: 1, to: 7, capacity: 0.10, vulnerability: 0.12}   # Yaroslavl ↔ Kalinin (frontline)
+  - {from: 2, to: 4, capacity: 0.08, vulnerability: 0.20}   # Tula ↔ Bryansk (forest, risky)
+  - {from: 4, to: 5, capacity: 0.06, vulnerability: 0.35}   # Bryansk ↔ Vyazma (partisan zone!)
+  - {from: 5, to: 6, capacity: 0.15, vulnerability: 0.10}   # Vyazma ↔ Smolensk (Axis rear)
+  - {from: 6, to: 7, capacity: 0.12, vulnerability: 0.08}   # Smolensk ↔ Kalinin
+  - {from: 7, to: 8, capacity: 0.10, vulnerability: 0.12}   # Kalinin ↔ Klin
+
+# ── Terrain types for nonlinear combat ───────────────────────────────────── #
+terrain:
+  urban:
+    defender_multiplier: 2.0
+    hazard_multiplier: 1.3
+    movement_cost: 1.5
+  fortified:
+    defender_multiplier: 2.5
+    hazard_multiplier: 1.0
+    movement_cost: 2.0
+  forest:
+    defender_multiplier: 1.5
+    hazard_multiplier: 0.8
+    movement_cost: 1.8
+    partisan_bonus: 0.3
+  rail:
+    defender_multiplier: 0.8
+    hazard_multiplier: 1.0
+    movement_cost: 0.5
+    sabotage_vulnerability: 0.2
+  open:
+    defender_multiplier: 1.0
+    hazard_multiplier: 1.0
+    movement_cost: 1.0
+
+# ── Initial alliance matrix ──────────────────────────────────────────────── #
+initial_alliances:
+  # Soviet internal coordination
+  - {from: 0, to: 1, value:  0.40}   # Moscow ↔ Yaroslavl
+  - {from: 0, to: 2, value:  0.35}   # Moscow ↔ Tula
+  - {from: 0, to: 3, value:  0.30}   # Moscow ↔ Reserves
+  - {from: 1, to: 3, value:  0.45}   # Yaroslavl ↔ Reserves (strong link)
+  - {from: 2, to: 3, value:  0.25}   # Tula ↔ Reserves
+
+  # Partisan-Soviet alliance
+  - {from: 4, to: 0, value:  0.30}   # Bryansk ↔ Moscow (partisan coordination)
+  - {from: 4, to: 2, value:  0.25}   # Bryansk ↔ Tula (southern partisans)
+  - {from: 4, to: 3, value:  0.20}   # Bryansk ↔ Reserves (recruitment pipeline)
+
+  # Axis internal coordination
+  - {from: 5, to: 6, value:  0.40}   # Vyazma ↔ Smolensk (main Axis supply line)
+  - {from: 6, to: 7, value:  0.35}   # Smolensk ↔ Kalinin
+  - {from: 7, to: 8, value:  0.30}   # Kalinin ↔ Klin (northern pincer)
+  - {from: 5, to: 8, value:  0.20}   # Vyazma ↔ Klin (direct support)
+
+  # Hostilities
+  - {from: 4, to: 5, value: -0.40}   # Bryansk ↔ Vyazma (partisan vs Axis supply)
+  - {from: 0, to: 8, value: -0.50}   # Moscow ↔ Klin (main axis of threat)
+  - {from: 2, to: 4, value: -0.15}   # Tula ↔ Bryansk (contested zone friction)
+  - {from: 1, to: 7, value: -0.30}   # Yaroslavl ↔ Kalinin (northern front)
+  - {from: 3, to: 8, value: -0.35}   # Reserves ↔ Klin (counterattack target)
+
+# ── Historical shocks ────────────────────────────────────────────────────── #
+custom_shocks:
+  - name: RailSabotage
+    probability: 0.045
+    effect_type: cluster
+    target_cluster: 5
+    description: "Partisans blow up a supply train on the Vyazma rail line!"
+    params_delta:
+      resource_drain: +0.25
+      hazard_boost: +0.15
+    historical_note: "Soviet partisans destroyed over 3,500 rail cars during the battle."
+
+  - name: FuelShortage
+    probability: 0.030
+    effect_type: multi_cluster
+    target_clusters: [7, 8]
+    description: "Axis vehicles run out of fuel! Advance stalls."
+    params_delta:
+      exhaustion_boost: +0.10
+      resource_drain: +0.15
+      sigma_drop: -0.05
+    historical_note: "German vehicles froze solid. Synthetic fuel gelled at -30C."
+
+  - name: WinterBlizzard
+    probability: 0.035
+    effect_type: global
+    description: "Temperature drops to -40C. Equipment freezes. Frostbite casualties."
+    params_delta:
+      exhaustion_boost: +0.12
+      resource_drain: +0.08
+      hazard_boost: +0.05
+    historical_note: "The winter of 1941-42 was one of the coldest on record."
+
+  - name: SiberianDivisions
+    probability: 0.015
+    effect_type: cluster
+    target_cluster: 3
+    description: "Fresh Siberian divisions arrive! Winter-equipped and combat-ready."
+    params_delta:
+      military_surge: +0.20
+      sigma_boost: +0.15
+      resource_boost: +0.10
+    historical_note: "Stalin transferred 18 divisions from Siberia after learning Japan would not attack."
+
+  - name: FactoryEvacuation
+    probability: 0.020
+    effect_type: cluster
+    target_cluster: 0
+    description: "Soviet factories relocated east. Short-term production loss."
+    params_delta:
+      resource_drain: +0.15
+      sigma_drop: -0.08
+    historical_note: "1,500 factories were evacuated east of the Urals in late 1941."
+
+  - name: GermanPanicRetreat
+    probability: 0.010
+    effect_type: multi_cluster
+    target_clusters: [7, 8]
+    description: "Axis units begin unauthorized retreat. Hitler issues Halt Order!"
+    params_delta:
+      sigma_drop: -0.20
+      hazard_boost: +0.25
+      military_drain: +0.10
+    historical_note: "Dec 1941: Hitler's 'stand fast' order prevented organized retreat but caused massive casualties."
+
+  - name: SovietCounteroffensive
+    probability: 0.012
+    effect_type: multi_cluster
+    target_clusters: [7, 8]
+    description: "Zhukov launches the Moscow counteroffensive! Fresh troops attack along the whole front."
+    params_delta:
+      hazard_boost: +0.30
+      sigma_drop: -0.20
+      military_drain: +0.15
+      resource_drain: +0.10
+    historical_note: "Dec 5, 1941: Soviet counteroffensive drove Germans back 100-250km from Moscow."
+
+  - name: AxisAirSuperiority
+    probability: 0.025
+    effect_type: cluster
+    target_cluster: 0
+    description: "Luftwaffe bombing raids on Moscow. Civilian terror, infrastructure damage."
+    params_delta:
+      hazard_boost: +0.15
+      sigma_drop: -0.08
+      trust_drop: -0.05
+    historical_note: "The Luftwaffe conducted 76 bombing raids on Moscow, though AA defenses were strong."
+
+  - name: PartisanUprising
+    probability: 0.020
+    effect_type: cluster
+    target_cluster: 4
+    description: "Coordinated partisan uprising in Bryansk Forest! Multiple rail lines cut."
+    params_delta:
+      sigma_boost: +0.10
+      military_surge: +0.08
+      hazard_boost: +0.10
+    historical_note: "By late 1941, over 30,000 partisans operated behind German lines near Moscow."
+
+  - name: MudSeason
+    probability: 0.025
+    effect_type: global
+    description: "Rasputitsa! Autumn rains turn roads to mud. All movement slows."
+    params_delta:
+      exhaustion_boost: +0.08
+      resource_drain: +0.06
+    historical_note: "The autumn rasputitsa delayed Operation Typhoon by weeks, giving Soviets time to prepare."
+
+# ── Agents ──────────────────────────────────────────────────────────────── #
+agents:
+  - name: GermanArmyGroupCenter
+    side: Axis
+    policy: RecurrentPPO
+    controlled_clusters: [5, 6, 7, 8]
+    primary_objective: [capture_moscow, hold_rail_hubs, suppress_partisans]
+    diplomacy_bias: suppress_partisans
+
+  - name: SovietWesternFront
+    side: Soviet
+    controlled_clusters: [0, 1, 2, 3]
+    policy: RecurrentPPO
+    primary_objective: [defend_moscow, support_partisans, counterattack]
+    diplomacy_bias: coordinate_with_partisans
+
+# ── Notes ────────────────────────────────────────────────────────────────── #
+# 1. Sector 4 (Bryansk Forest) is Contested — neither agent controls it directly.
+#    The partisan_warfare plugin manages partisan units operating from this sector.
+# 2. logistics_links define the supply network graph used by logistics_network plugin.
+# 3. terrain types define nonlinear combat modifiers used by nonlinear_combat plugin.
+# 4. production/consumption fields on sectors are used by logistics_network plugin.
+# 5. This scenario is designed to be run with three plugins:
+#      python cli.py run moscow --plugins nonlinear_combat logistics_network partisan_warfare
