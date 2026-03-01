@@ -45,8 +45,8 @@ echo "  Nuitka: $($PYTHON -m nuitka --version 2>&1 | head -1)"
 echo "═══════════════════════════════════════════════════════════"
 echo
 
-# ── Compile gravitas (orchestration layer) ──────────────────────────────── #
-echo "[1/2] Compiling gravitas package..."
+# ── Compile gravitas (orchestration + plugins) ──────────────────────────── #
+echo "[1/3] Compiling gravitas package (engine + plugins)..."
 $PYTHON -m nuitka \
     --module gravitas \
     --include-package=gravitas \
@@ -55,13 +55,26 @@ $PYTHON -m nuitka \
 echo
 
 # ── Compile gravitas_engine (core simulation) ───────────────────────────── #
-echo "[2/2] Compiling gravitas_engine package..."
+echo "[2/3] Compiling gravitas_engine package (dynamics + env)..."
 $PYTHON -m nuitka \
     --module gravitas_engine \
     --include-package=gravitas_engine \
     --output-dir="$OUTPUT_DIR" \
     2>&1 | tail -3
 echo
+
+# ── Compile extensions (military + political) ───────────────────────────── #
+if [ -d "extensions" ]; then
+    echo "[3/3] Compiling extensions package (military + political)..."
+    $PYTHON -m nuitka \
+        --module extensions \
+        --include-package=extensions \
+        --output-dir="$OUTPUT_DIR" \
+        2>&1 | tail -3
+    echo
+else
+    echo "[3/3] Skipping extensions (not found)"
+fi
 
 # ── Summary ─────────────────────────────────────────────────────────────── #
 echo "═══════════════════════════════════════════════════════════"
@@ -70,4 +83,5 @@ ls -lh "$OUTPUT_DIR"/*.so 2>/dev/null || echo "  (no .so files found)"
 echo "═══════════════════════════════════════════════════════════"
 echo
 echo "To use compiled modules, add build/ to PYTHONPATH:"
-echo "  PYTHONPATH=$OUTPUT_DIR:\$PYTHONPATH python cli.py run stalingrad"
+echo "  PYTHONPATH=$OUTPUT_DIR:\$PYTHONPATH python cli.py run moscow"
+echo "  PYTHONPATH=$OUTPUT_DIR:\$PYTHONPATH python tests/train_moscow_selfplay.py"
