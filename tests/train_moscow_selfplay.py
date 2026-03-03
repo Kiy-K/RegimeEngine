@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """
-train_moscow_selfplay.py — Self-play training for Battle of Moscow.
+train_moscow_selfplay.py — Self-play training for Battle of Moscow (CoW-native).
 
-Trains two RecurrentPPO agents (Axis vs Soviet) via iterative self-play
-with nonlinear combat, logistics network, and partisan warfare plugins
-active during every training step.
+Uses the CoW-native military system directly:
+  - MilitaryWrapper with MultiDiscrete action space
+  - Built-in production, building, research, combat, supply dynamics
+  - No legacy plugin system dependency — all mechanics in military_dynamics
 
-Plugin hooks fire inside the env step, creating:
-  - Nonlinear Lanchester combat dynamics
-  - Graph-based logistics with distance decay & sabotage
-  - Autonomous partisan units (uncontrolled by either agent)
+6-phase curriculum:
+  Phase 1: Operation Typhoon   — Axis learns to advance and produce
+  Phase 2: Mozhaisk Defense     — Soviet learns to hold and build
+  Phase 3: General Winter       — Both sides, winter attrition amplified
+  Phase 4: Partisan Escalation  — Both sides, contested territory focus
+  Phase 5: Zhukov Counterattack — Both sides, Soviet reinforcement wave
+  Phase 6: Final Self-Play      — Full dynamics, LR annealed
 
 Usage:
-    # From scratch (optimized with Nuitka .so if available)
     python tests/train_moscow_selfplay.py --total-rounds 20
-
-    # Resume from checkpoint
-    python tests/train_moscow_selfplay.py \\
-        --resume-from logs/moscow_selfplay/round_005
-
-    # With Nuitka-compiled modules (2-3× faster)
-    PYTHONPATH=build:$PYTHONPATH python tests/train_moscow_selfplay.py
+    python tests/train_moscow_selfplay.py --resume-from logs/moscow_selfplay/phase1_round_003
 """
 
 from __future__ import annotations
@@ -29,6 +26,7 @@ import argparse
 import os
 import sys
 import time
+import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,14 +38,12 @@ _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 sys.path.insert(0, str(_ROOT))
 
-from gravitas_engine.core.gravitas_params import GravitasParams
-from gravitas_engine.agents.stalingrad_ma import (
-    AXIS, SOVIET, SIDE_NAMES,
-    StalingradMultiAgentEnv,
-    SelfPlayEnv,
+from extensions.military.military_wrapper import MilitaryWrapper
+from extensions.military.military_dynamics import (
+    ActionType, N_ACTION_TYPES, N_UNIT_TYPES, N_BUILDING_TYPES,
+    world_to_obs_array, obs_size, check_victory,
 )
-from regime_loader import load_standalone_regime, build_initial_states
-from gravitas.plugins import load_plugins_from_config
+from extensions.military.cow_combat import CowTerrain, CowUnitType, cow_type_from_legacy
 
 # ── Optional imports ──────────────────────────────────────────────────────── #
 try:
@@ -58,7 +54,8 @@ except ImportError:
 
 try:
     from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+    from stable_baselines3.common.callbacks import BaseCallback
     HAS_SB3 = True
 except ImportError:
     HAS_SB3 = False
@@ -78,235 +75,245 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Moscow defaults                                                              #
+# Constants                                                                     #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-MOSCOW_AXIS_CLUSTERS   = [5, 6, 7, 8]
-MOSCOW_SOVIET_CLUSTERS = [0, 1, 2, 3]
-MOSCOW_CONTESTED       = [4]
+AXIS   = 0
+SOVIET = 1
+SIDE_NAMES = {AXIS: "Axis", SOVIET: "Soviet"}
 
-MOSCOW_PLUGINS = ["nonlinear_combat", "logistics_network", "partisan_warfare"]
+# Terrain mapping: YAML terrain names → CowTerrain enum names
+_TERRAIN_MAP = {
+    "urban": "URBAN",
+    "fortified": "URBAN",       # fortified → urban with bunker buildings
+    "forest": "FOREST",
+    "rail": "PLAINS",           # rail hub → plains
+    "open": "PLAINS",
+    "mountains": "MOUNTAINS",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Plugin-aware self-play env                                                   #
+# Scenario builder                                                              #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-class MoscowSelfPlayEnv(gym.Env):
-    """
-    Wraps SelfPlayEnv and applies Moscow plugins after each env step.
+def build_moscow_scenario(yaml_path: str) -> Dict[str, Any]:
+    """Parse moscow.yaml and build a scenario config dict for MilitaryWrapper."""
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
 
-    Plugins modify world state through on_step hooks, adding:
-    - Nonlinear combat (Lanchester, fatigue, breakthrough)
-    - Logistics network (production, flow, sabotage)
-    - Partisan warfare (autonomous units)
-    """
+    sectors = raw.get("sectors", [])
+    n_clusters = len(sectors)
 
-    metadata = {"render_modes": ["ansi"]}
+    # ── Adjacency from logistics_links ────────────────────────────────────
+    links = raw.get("logistics_links", [])
+    adj = np.eye(n_clusters, dtype=bool)
+    for link in links:
+        i, j = int(link["from"]), int(link["to"])
+        if i < n_clusters and j < n_clusters:
+            adj[i, j] = adj[j, i] = True
 
-    def __init__(
-        self,
-        regime_config: Dict[str, Any],
-        trainable_side: int = AXIS,
-        opponent_policy: Optional[Any] = None,
-        plugins: Optional[List[Any]] = None,
-        plugin_configs: Optional[Dict[str, Dict]] = None,
-        seed: int = 42,
-    ) -> None:
-        super().__init__()
+    # ── Terrains ──────────────────────────────────────────────────────────
+    cluster_terrains = []
+    for sec in sectors:
+        t = sec.get("terrain", "open")
+        cluster_terrains.append(_TERRAIN_MAP.get(t, "PLAINS"))
 
-        self._inner = SelfPlayEnv(
-            params=regime_config["params"],
-            trainable_side=trainable_side,
-            opponent_policy=opponent_policy,
-            axis_clusters=regime_config["axis_clusters"],
-            soviet_clusters=regime_config["soviet_clusters"],
-            contested_clusters=regime_config.get("contested_clusters"),
-            initial_clusters=regime_config["initial_clusters"],
-            initial_alliances=regime_config["initial_alliances"],
-            seed=seed,
-        )
+    # ── Owners ────────────────────────────────────────────────────────────
+    cluster_owners: List[Optional[int]] = []
+    for sec in sectors:
+        side = sec.get("side", "").lower()
+        if side == "axis":
+            cluster_owners.append(AXIS)
+        elif side == "soviet":
+            cluster_owners.append(SOVIET)
+        else:
+            cluster_owners.append(None)
 
-        self.observation_space = self._inner.observation_space
-        self.action_space = self._inner.action_space
+    # ── Buildings from CoW config or defaults ─────────────────────────────
+    cow_cfg = raw.get("cow_military", {})
+    cluster_buildings_raw = cow_cfg.get("cluster_buildings")
+    if cluster_buildings_raw is None:
+        # Generate defaults from terrain + sector role
+        cluster_buildings_raw = []
+        for sec in sectors:
+            t = sec.get("terrain", "open")
+            side = sec.get("side", "").lower()
+            bld: Dict[str, int] = {}
+            if t in ("urban", "fortified"):
+                bld["BARRACKS"] = 2
+                bld["BUNKER"] = 1 if t == "fortified" else 0
+            elif t == "rail":
+                bld["BARRACKS"] = 1
+                bld["SUPPLY_DEPOT"] = 1
+            elif side in ("axis", "soviet"):
+                bld["BARRACKS"] = 1
+            cluster_buildings_raw.append(bld)
 
-        # Initialize plugins
-        self._plugins = plugins or []
-        self._plugin_configs = plugin_configs or {}
-        self._step_count = 0
+    # ── Factions ──────────────────────────────────────────────────────────
+    axis_clusters = [i for i, o in enumerate(cluster_owners) if o == AXIS]
+    soviet_clusters = [i for i, o in enumerate(cluster_owners) if o == SOVIET]
 
-        # Build scenario metadata for plugins
-        self._scenario_meta = {
-            "axis_clusters": regime_config["axis_clusters"],
-            "soviet_clusters": regime_config["soviet_clusters"],
-            "contested_clusters": regime_config.get("contested_clusters", MOSCOW_CONTESTED),
-            "logistics_links": regime_config.get("logistics_links", []),
-            "terrain": regime_config.get("terrain", {}),
-        }
+    factions = [
+        {
+            "faction_id": AXIS,
+            "name": "German Army Group Center",
+            "doctrine": "AXIS",
+            "controlled_clusters": axis_clusters,
+            "base_income": cow_cfg.get("axis_income", [4.0, 3.5, 2.5, 2.0, 1.0]),
+        },
+        {
+            "faction_id": SOVIET,
+            "name": "Soviet Western Front",
+            "doctrine": "COMINTERN",
+            "controlled_clusters": soviet_clusters,
+            "base_income": cow_cfg.get("soviet_income", [3.5, 4.0, 2.5, 1.5, 1.5]),
+        },
+    ]
 
-    def set_opponent(self, policy: Any) -> None:
-        self._inner.set_opponent(policy)
+    # ── Objectives ────────────────────────────────────────────────────────
+    objectives = cow_cfg.get("objectives", [
+        {"objective_id": 0, "name": "Capture Moscow",
+         "objective_type": "capture", "target_cluster_id": 0,
+         "faction_id": AXIS, "required_strength": 30},
+        {"objective_id": 1, "name": "Hold Mozhaisk Line",
+         "objective_type": "hold", "target_cluster_id": 2,
+         "faction_id": SOVIET, "required_strength": 20,
+         "hold_required": 30},
+        {"objective_id": 2, "name": "Defend Moscow",
+         "objective_type": "hold", "target_cluster_id": 0,
+         "faction_id": SOVIET, "required_strength": 30,
+         "hold_required": 50},
+        {"objective_id": 3, "name": "Secure Vyazma Supply Line",
+         "objective_type": "hold", "target_cluster_id": 5,
+         "faction_id": AXIS, "required_strength": 15,
+         "hold_required": 20},
+    ])
 
-    def reset(
-        self,
-        seed: Optional[int] = None,
-        options: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
-        obs, info = self._inner.reset(seed=seed, options=options)
-        self._step_count = 0
-
-        # Reset plugins with world state and scenario metadata
-        world = self._inner._ma_env._world
-        for plugin in self._plugins:
-            cfg = self._plugin_configs.get(plugin.name, {})
-            if cfg:
-                for k, v in cfg.items():
-                    if hasattr(plugin, k):
-                        setattr(plugin, k, v)
+    # ── Initial units ─────────────────────────────────────────────────────
+    initial_units_raw = raw.get("initial_units", {})
+    initial_units: Dict[int, List[Dict]] = {}
+    for k, v in initial_units_raw.items():
+        cluster_id = int(k)
+        units_for_cluster: List[Dict] = []
+        for defn in v:
+            # Map unit type name to CowUnitType
+            utype = defn.get("unit_type", "INFANTRY").upper()
+            # Try direct enum lookup first, then legacy alias
             try:
-                plugin.on_reset(world, engine=self, env=self._inner)
-            except TypeError:
-                plugin.on_reset(world)
+                CowUnitType[utype]
+            except KeyError:
+                mapped = cow_type_from_legacy(utype)
+                utype = mapped.name if mapped else "INFANTRY"
 
-        return obs, info
+            faction_raw = defn.get("faction", 0)
+            if isinstance(faction_raw, str):
+                faction_id = AXIS if faction_raw.lower() == "axis" else SOVIET
+            else:
+                faction_id = int(faction_raw)
 
-    def step(
-        self,
-        action: int,
-    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
-        obs, reward, terminated, truncated, info = self._inner.step(action)
-        self._step_count += 1
+            units_for_cluster.append({
+                "unit_type": utype,
+                "count": int(defn.get("count", 1)),
+                "faction": faction_id,
+            })
+        initial_units[cluster_id] = units_for_cluster
 
-        # Apply plugin on_step hooks to world state
-        ma_env = self._inner._ma_env
-        world = ma_env._world
-        rewards_dict = {
-            AXIS: info.get("own_reward", reward) if self._inner.trainable_side == AXIS else info.get("opp_reward", 0),
-            SOVIET: info.get("own_reward", reward) if self._inner.trainable_side == SOVIET else info.get("opp_reward", 0),
-        }
+    # ── Faction modifiers (national spirit + government) ─────────────────
+    faction_modifiers = cow_cfg.get("faction_modifiers", {})
 
-        for plugin in self._plugins:
-            if not plugin.enabled:
-                continue
-            try:
-                new_world = plugin.on_step(
-                    world, self._step_count,
-                    actions={}, observations={},
-                    rewards=rewards_dict,
-                )
-                if new_world is not None:
-                    world = new_world
-            except Exception:
-                pass  # Plugin errors don't crash training
+    # ── Physics engine config ──────────────────────────────────────────
+    map_physics = cow_cfg.get("map_physics")
+    physics_enabled = map_physics is not None
 
-        # Write modified world back
-        ma_env._world = world
-
-        return obs, reward, terminated, truncated, info
-
-    @property
-    def _scenario_meta(self):
-        return self.__scenario_meta
-
-    @_scenario_meta.setter
-    def _scenario_meta(self, val):
-        self.__scenario_meta = val
-
-    def render(self) -> Optional[str]:
-        return self._inner.render()
+    return {
+        "n_clusters": n_clusters,
+        "adjacency": adj.tolist(),
+        "cluster_terrains": cluster_terrains,
+        "cluster_owners": cluster_owners,
+        "cluster_buildings": cluster_buildings_raw,
+        "factions": factions,
+        "objectives": objectives,
+        "initial_units": initial_units,
+        "faction_modifiers": faction_modifiers,
+        "physics_enabled": physics_enabled,
+        "map_physics": map_physics,
+        # Pass raw for reference
+        "_raw": raw,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
 # Environment factory                                                          #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-def load_moscow_config(regime_path: str, seed: int = 0) -> Dict[str, Any]:
-    """Load Moscow YAML and extract initial states + logistics metadata."""
-    regime_data = load_standalone_regime(regime_path, seed=seed)
-    params = regime_data["params"]
-
-    # Override n_clusters_max to 12 for obs compatibility
-    params = GravitasParams(**{
-        **{k: getattr(params, k) for k in GravitasParams.__dataclass_fields__},
-        "n_clusters_max": 12,
-    })
-
-    init_data = build_initial_states(regime_data, max_N=12)
-
-    # Parse agent cluster assignments from YAML
-    agents = regime_data.get("agents", [])
-    axis_clusters = MOSCOW_AXIS_CLUSTERS
-    soviet_clusters = MOSCOW_SOVIET_CLUSTERS
-    contested = MOSCOW_CONTESTED
-    for ag in agents:
-        if ag.get("side") == "Axis":
-            axis_clusters = ag.get("controlled_clusters", axis_clusters)
-        elif ag.get("side") == "Soviet":
-            soviet_clusters = ag.get("controlled_clusters", soviet_clusters)
-
-    # Extract logistics and terrain metadata from raw YAML
-    raw = regime_data.get("raw", {})
-    logistics_links = raw.get("logistics_links", [])
-    terrain = raw.get("terrain", {})
-
-    return {
-        "params": params,
-        "initial_clusters": init_data.get("initial_clusters"),
-        "initial_alliances": init_data.get("initial_alliances"),
-        "axis_clusters": axis_clusters,
-        "soviet_clusters": soviet_clusters,
-        "contested_clusters": contested,
-        "logistics_links": logistics_links,
-        "terrain": terrain,
-    }
-
-
 def make_moscow_env(
-    regime_config: Dict[str, Any],
-    trainable_side: int,
+    scenario_cfg: Dict[str, Any],
+    faction_id: int = AXIS,
+    opponent_faction_id: int = SOVIET,
     opponent_policy: Optional[Any] = None,
-    plugins: Optional[List[Any]] = None,
-    plugin_configs: Optional[Dict[str, Dict]] = None,
+    max_steps: int = 200,
     seed: int = 42,
-) -> MoscowSelfPlayEnv:
-    """Create a MoscowSelfPlayEnv with plugins for one side."""
-    return MoscowSelfPlayEnv(
-        regime_config=regime_config,
-        trainable_side=trainable_side,
+) -> MilitaryWrapper:
+    """Create a single MilitaryWrapper env for one faction."""
+    env = MilitaryWrapper(
+        scenario_cfg=scenario_cfg,
+        faction_id=faction_id,
+        opponent_faction_id=opponent_faction_id,
         opponent_policy=opponent_policy,
-        plugins=plugins,
-        plugin_configs=plugin_configs,
+        max_steps=max_steps,
+        max_clusters=12,
         seed=seed,
     )
+    return env
 
 
 def make_vec_env(
-    regime_config: Dict[str, Any],
-    trainable_side: int,
+    scenario_cfg: Dict[str, Any],
+    faction_id: int,
+    opponent_faction_id: int,
     opponent_policy: Optional[Any] = None,
-    plugins_factory=None,
-    plugin_configs: Optional[Dict[str, Dict]] = None,
     n_envs: int = 4,
+    max_steps: int = 200,
     seed: int = 42,
 ) -> VecNormalize:
-    """Create a vectorized + normalized env for SB3 training."""
+    """Create vectorized + normalized env for SB3 training.
+
+    Uses SubprocVecEnv for true multiprocess parallelism.
+    """
+    import tempfile as _tmpmod
+
+    _opp_path: Optional[str] = None
+    if opponent_policy is not None and hasattr(opponent_policy, "save"):
+        _tmp = _tmpmod.NamedTemporaryFile(suffix=".zip", delete=False)
+        _opp_path = _tmp.name
+        _tmp.close()
+        opponent_policy.save(_opp_path)
+
     def _make(i: int):
         def _thunk():
-            # Each env gets its own plugin instances (independent RNG state)
-            plugins = plugins_factory() if plugins_factory else []
+            opp = None
+            if _opp_path is not None:
+                from sb3_contrib import RecurrentPPO as _RPPO
+                opp = _RPPO.load(_opp_path, device="cpu")
+                # Wrap model.predict as a callable policy
+                def _opp_fn(obs):
+                    import numpy as _np
+                    act, _ = opp.predict(obs.reshape(1, -1), deterministic=False)
+                    return act.flatten()
+                opp = _opp_fn
             env = make_moscow_env(
-                regime_config,
-                trainable_side=trainable_side,
-                opponent_policy=opponent_policy,
-                plugins=plugins,
-                plugin_configs=plugin_configs,
+                scenario_cfg, faction_id=faction_id,
+                opponent_faction_id=opponent_faction_id,
+                opponent_policy=opp, max_steps=max_steps,
                 seed=seed + i * 1000,
             )
             return Monitor(env)
         return _thunk
 
-    vec = DummyVecEnv([_make(i) for i in range(n_envs)])
+    vec = SubprocVecEnv([_make(i) for i in range(n_envs)])
     vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    vec._opponent_tmp_path = _opp_path  # type: ignore
     return vec
 
 
@@ -315,71 +322,104 @@ def make_vec_env(
 # ─────────────────────────────────────────────────────────────────────────── #
 
 def train_selfplay(args: argparse.Namespace) -> None:
-    """Main self-play training loop for Moscow."""
+    """
+    6-phase self-play training for Battle of Moscow (CoW-native).
+
+    Phase 1: Operation Typhoon   — 3 rounds, Axis vs random
+    Phase 2: Mozhaisk Defense     — 3 rounds, Soviet vs frozen Axis
+    Phase 3: General Winter       — 3 rounds, both sides
+    Phase 4: Partisan Escalation  — 3 rounds, both sides
+    Phase 5: Zhukov Counterattack — 4 rounds, both sides
+    Phase 6: Final Self-Play      — 4 rounds, both sides, LR annealed
+    """
     assert HAS_RPPO, "sb3-contrib required: pip install sb3-contrib"
     assert HAS_SB3,  "stable-baselines3 required"
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load Moscow regime
+    # Load scenario
     regime_path = args.regime_file or str(_ROOT / "gravitas" / "scenarios" / "moscow.yaml")
-    regime_config = load_moscow_config(regime_path, seed=args.seed)
+    scenario_cfg = build_moscow_scenario(regime_path)
 
-    # Plugin configuration
-    plugin_configs = {
-        "nonlinear_combat": {
-            "diminishing_returns_alpha": 0.7,
-            "breakthrough_threshold": 0.58,
-            "fatigue_midpoint": 120,
+    # ── 6-Phase schedule ───────────────────────────────────────────────── #
+    PHASES = [
+        {
+            "name": "Phase 1: Operation Typhoon (Axis Advance)",
+            "rounds": 3, "steps": args.steps_per_round,
+            "train_sides": [AXIS],
+            "lr": args.lr, "ent_coef": 0.02,
+            "max_steps": 150,
         },
-        "logistics_network": {
-            "winter_axis_penalty": 0.35,
-            "distance_decay_rate": 0.3,
+        {
+            "name": "Phase 2: Mozhaisk Defense Line (Soviet Defense)",
+            "rounds": 3, "steps": args.steps_per_round,
+            "train_sides": [SOVIET],
+            "lr": args.lr, "ent_coef": 0.02,
+            "max_steps": 150,
         },
-        "partisan_warfare": {
-            "max_partisans": 6,
-            "ambush_military_damage": 0.06,
+        {
+            "name": "Phase 3: General Winter (Both Sides)",
+            "rounds": 3, "steps": args.steps_per_round,
+            "train_sides": [AXIS, SOVIET],
+            "lr": args.lr, "ent_coef": 0.015,
+            "max_steps": 200,
         },
-    }
+        {
+            "name": "Phase 4: Partisan Escalation (Contested Focus)",
+            "rounds": 3, "steps": args.steps_per_round,
+            "train_sides": [AXIS, SOVIET],
+            "lr": args.lr * 0.8, "ent_coef": 0.012,
+            "max_steps": 200,
+        },
+        {
+            "name": "Phase 5: Zhukov Counteroffensive (Soviet Push)",
+            "rounds": 4, "steps": args.steps_per_round,
+            "train_sides": [AXIS, SOVIET],
+            "lr": args.lr * 0.5, "ent_coef": 0.01,
+            "max_steps": 250,
+        },
+        {
+            "name": "Phase 6: Final Self-Play (Full Dynamics)",
+            "rounds": 4, "steps": args.steps_per_round,
+            "train_sides": [AXIS, SOVIET],
+            "lr": args.lr * 0.3, "ent_coef": 0.008,
+            "max_steps": 300,
+        },
+    ]
 
-    # Plugin factory — each env gets fresh plugin instances
-    def make_plugins():
-        return load_plugins_from_config(args.plugins)
+    total_rounds = sum(p["rounds"] for p in PHASES)
+    total_steps = sum(p["rounds"] * p["steps"] * len(p["train_sides"]) for p in PHASES)
 
-    print("╔══════════════════════════════════════════════════════════╗")
-    print("║          BATTLE OF MOSCOW — SELF-PLAY TRAINING         ║")
-    print("╠══════════════════════════════════════════════════════════╣")
-    print(f"║  Axis clusters:   {regime_config['axis_clusters']}")
-    print(f"║  Soviet clusters: {regime_config['soviet_clusters']}")
-    print(f"║  Plugins:         {args.plugins}")
-    print(f"║  Rounds:          {args.total_rounds}")
-    print(f"║  Steps/round:     {args.steps_per_round}")
-    print(f"║  N envs:          {args.n_envs}")
-    print(f"║  LSTM hidden:     {args.lstm_hidden}")
-    print(f"║  Device:          {args.device}")
-    print(f"║  Log dir:         {log_dir}")
-
-    # Check for Nuitka-compiled modules
-    nuitka_active = any(
-        hasattr(sys.modules.get(m, None), "__compiled__")
-        for m in ["gravitas", "gravitas_engine"]
-    )
-    if nuitka_active:
-        print("║  ⚡ Nuitka compiled modules detected — FAST MODE")
-    else:
-        print("║  ℹ  Interpreted mode (run build_nuitka.sh for 2-3× speedup)")
-    print("╚══════════════════════════════════════════════════════════╝")
+    # ── Print banner ──────────────────────────────────────────────────────
+    print("+" + "=" * 58 + "+")
+    print("|    BATTLE OF MOSCOW — 6-PHASE SELF-PLAY (CoW-native)    |")
+    print("+" + "=" * 58 + "+")
+    print(f"  Clusters:       {scenario_cfg['n_clusters']}")
+    print(f"  Action space:   MultiDiscrete (produce/upgrade/move/attack/build/research/reinforce/retreat)")
+    print(f"  Total phases:   6")
+    print(f"  Total rounds:   {total_rounds}")
+    print(f"  Steps/round:    {args.steps_per_round}")
+    print(f"  Total steps:    ~{total_steps:,}")
+    print(f"  N envs:         {args.n_envs}")
+    print(f"  LSTM hidden:    {args.lstm_hidden}")
+    print(f"  Device:         {args.device}")
+    print(f"  Log dir:        {log_dir}")
+    print("+" + "-" * 58 + "+")
+    for i, p in enumerate(PHASES, 1):
+        sides = "+".join(SIDE_NAMES[s] for s in p["train_sides"])
+        print(f"  P{i}: {p['rounds']}r x {p['steps']//1000}K  lr={p['lr']:.1e}  [{sides}]")
+    print("+" + "=" * 58 + "+")
 
     # WandB
     if args.wandb and HAS_WANDB:
         wandb.init(
-            project="gravitas-moscow-selfplay",
-            config=vars(args),
-            name=f"moscow_r{args.total_rounds}_s{args.steps_per_round}",
+            project="gravitas-moscow-cow",
+            config={**vars(args), "n_phases": 6, "total_rounds": total_rounds},
+            name=f"moscow_cow_6phase_{total_rounds}r",
         )
 
-    # ── Initialize models ─────────────────────────────────────────────── #
+    # ── Initialize models ─────────────────────────────────────────────────
     axis_model: Optional[RecurrentPPO] = None
     soviet_model: Optional[RecurrentPPO] = None
 
@@ -391,150 +431,152 @@ def train_selfplay(args: argparse.Namespace) -> None:
         net_arch=dict(pi=[256, 128], vf=[256, 128]),
     )
 
-    if args.pretrained:
-        print(f"\n  Loading pretrained model: {args.pretrained}")
-        axis_model = RecurrentPPO.load(args.pretrained, device=args.device)
-        soviet_model = RecurrentPPO.load(args.pretrained, device=args.device)
-        print("  ✓ Both sides initialized from pretrained model")
-    elif args.resume_from:
-        rdir = Path(args.resume_from)
-        axis_path = rdir / "axis_model.zip"
-        soviet_path = rdir / "soviet_model.zip"
-        if axis_path.exists():
-            axis_model = RecurrentPPO.load(str(axis_path), device=args.device)
-            print(f"  ✓ Resumed Axis model from {axis_path}")
-        if soviet_path.exists():
-            soviet_model = RecurrentPPO.load(str(soviet_path), device=args.device)
-            print(f"  ✓ Resumed Soviet model from {soviet_path}")
+    _resume_from = args.resume_from
 
-    # ── Self-play rounds ──────────────────────────────────────────────── #
-    for rnd in range(1, args.total_rounds + 1):
-        print(f"\n{'='*60}")
-        print(f"  ROUND {rnd}/{args.total_rounds}")
-        print(f"{'='*60}")
+    # ── Phase loop ────────────────────────────────────────────────────────
+    global_round = 0
+    t_start = time.time()
 
-        # ── Phase 1: Train Axis vs frozen Soviet ──────────────────────── #
-        print(f"\n  Phase 1: Training AXIS (vs {'Soviet model' if soviet_model else 'random'})")
-        t0 = time.time()
+    for phase_idx, phase in enumerate(PHASES):
+        phase_num = phase_idx + 1
+        phase_name = phase["name"]
+        phase_lr = phase["lr"]
+        phase_ent = phase["ent_coef"]
+        phase_max_steps = phase["max_steps"]
 
-        axis_env = make_vec_env(
-            regime_config,
-            trainable_side=AXIS,
-            opponent_policy=soviet_model,
-            plugins_factory=make_plugins,
-            plugin_configs=plugin_configs,
-            n_envs=args.n_envs,
-            seed=args.seed + rnd * 100,
-        )
+        print(f"\n{'#' * 60}")
+        print(f"  {phase_name}")
+        print(f"  Rounds: {phase['rounds']}  Steps: {phase['steps']}  LR: {phase_lr:.1e}")
+        print(f"{'#' * 60}")
 
-        if axis_model is None:
-            axis_model = RecurrentPPO(
-                "MlpLstmPolicy",
-                axis_env,
-                verbose=1,
-                learning_rate=args.lr,
-                n_steps=args.n_steps,
-                batch_size=args.batch_size,
-                n_epochs=args.n_epochs,
-                gamma=args.gamma,
-                gae_lambda=0.95,
-                ent_coef=args.ent_coef,
-                clip_range=0.2,
-                max_grad_norm=0.5,
-                device=args.device,
-                policy_kwargs=policy_kwargs,
-            )
-        else:
-            axis_model.set_env(axis_env)
+        for rnd_in_phase in range(1, phase["rounds"] + 1):
+            global_round += 1
+            print(f"\n{'=' * 60}")
+            print(f"  Round {global_round}/{total_rounds}  "
+                  f"(Phase {phase_num}, round {rnd_in_phase}/{phase['rounds']})")
+            print(f"{'=' * 60}")
 
-        axis_model.learn(
-            total_timesteps=args.steps_per_round,
-            reset_num_timesteps=False,
-            progress_bar=args.progress_bar,
-        )
-        axis_time = time.time() - t0
-        print(f"  ✓ Axis training done ({axis_time:.1f}s)")
-        axis_env.close()
+            for side in phase["train_sides"]:
+                side_name = SIDE_NAMES[side]
+                opponent_side = SOVIET if side == AXIS else AXIS
+                opponent_model = soviet_model if side == AXIS else axis_model
+                current_model = axis_model if side == AXIS else soviet_model
 
-        # ── Phase 2: Train Soviet vs frozen Axis ──────────────────────── #
-        print(f"\n  Phase 2: Training SOVIET (vs Axis model)")
-        t0 = time.time()
+                print(f"\n  Training {side_name} "
+                      f"(vs {'model' if opponent_model else 'random'})")
+                t0 = time.time()
 
-        soviet_env = make_vec_env(
-            regime_config,
-            trainable_side=SOVIET,
-            opponent_policy=axis_model,
-            plugins_factory=make_plugins,
-            plugin_configs=plugin_configs,
-            n_envs=args.n_envs,
-            seed=args.seed + rnd * 100 + 50,
-        )
+                env = make_vec_env(
+                    scenario_cfg,
+                    faction_id=side,
+                    opponent_faction_id=opponent_side,
+                    opponent_policy=opponent_model,
+                    n_envs=args.n_envs,
+                    max_steps=phase_max_steps,
+                    seed=args.seed + global_round * 100 + side * 50,
+                )
 
-        if soviet_model is None:
-            soviet_model = RecurrentPPO(
-                "MlpLstmPolicy",
-                soviet_env,
-                verbose=1,
-                learning_rate=args.lr,
-                n_steps=args.n_steps,
-                batch_size=args.batch_size,
-                n_epochs=args.n_epochs,
-                gamma=args.gamma,
-                gae_lambda=0.95,
-                ent_coef=args.ent_coef,
-                clip_range=0.2,
-                max_grad_norm=0.5,
-                device=args.device,
-                policy_kwargs=policy_kwargs,
-            )
-        else:
-            soviet_model.set_env(soviet_env)
+                if current_model is None:
+                    if _resume_from:
+                        rdir = Path(_resume_from)
+                        side_file = "axis_model.zip" if side == AXIS else "soviet_model.zip"
+                        ckpt = rdir / side_file
+                        if ckpt.exists():
+                            current_model = RecurrentPPO.load(
+                                str(ckpt), env=env, device=args.device,
+                                verbose=0, learning_rate=phase_lr,
+                                ent_coef=phase_ent,
+                            )
+                            print(f"    Resumed from {ckpt}")
 
-        soviet_model.learn(
-            total_timesteps=args.steps_per_round,
-            reset_num_timesteps=False,
-            progress_bar=args.progress_bar,
-        )
-        soviet_time = time.time() - t0
-        print(f"  ✓ Soviet training done ({soviet_time:.1f}s)")
-        soviet_env.close()
+                    if current_model is None:
+                        current_model = RecurrentPPO(
+                            "MultiInputLstmPolicy" if isinstance(
+                                env.observation_space, spaces.Dict
+                            ) else "MlpLstmPolicy",
+                            env,
+                            verbose=0,
+                            learning_rate=phase_lr,
+                            n_steps=args.n_steps,
+                            batch_size=args.batch_size,
+                            n_epochs=args.n_epochs,
+                            gamma=args.gamma,
+                            gae_lambda=0.95,
+                            ent_coef=phase_ent,
+                            clip_range=0.2,
+                            max_grad_norm=0.5,
+                            device=args.device,
+                            policy_kwargs=policy_kwargs,
+                        )
+                else:
+                    current_model.set_env(env)
+                    current_model.learning_rate = phase_lr
+                    current_model.ent_coef = phase_ent
 
-        # ── Save checkpoint ───────────────────────────────────────────── #
-        if rnd % args.save_every == 0 or rnd == args.total_rounds:
-            ckpt_dir = log_dir / f"round_{rnd:03d}"
+                current_model.learn(
+                    total_timesteps=phase["steps"],
+                    reset_num_timesteps=False,
+                    progress_bar=True,
+                )
+                elapsed = time.time() - t0
+                print(f"  Done {side_name} ({elapsed:.1f}s)")
+
+                # Cleanup
+                _tmp_path = getattr(env, "_opponent_tmp_path", None)
+                env.close()
+                if _tmp_path and os.path.exists(_tmp_path):
+                    os.unlink(_tmp_path)
+
+                if side == AXIS:
+                    axis_model = current_model
+                else:
+                    soviet_model = current_model
+
+            # ── Save checkpoint ───────────────────────────────────────────
+            ckpt_dir = log_dir / f"phase{phase_num}_round_{global_round:03d}"
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-            axis_model.save(str(ckpt_dir / "axis_model"))
-            soviet_model.save(str(ckpt_dir / "soviet_model"))
-            print(f"  💾 Saved checkpoint → {ckpt_dir}")
+            if axis_model is not None:
+                axis_model.save(str(ckpt_dir / "axis_model"))
+            if soviet_model is not None:
+                soviet_model.save(str(ckpt_dir / "soviet_model"))
+            print(f"  Saved -> {ckpt_dir}")
 
-        # ── Quick evaluation ──────────────────────────────────────────── #
-        if rnd % args.eval_every == 0:
-            eval_results = quick_eval(
-                regime_config, axis_model, soviet_model,
-                plugins_factory=make_plugins,
-                plugin_configs=plugin_configs,
-                n_episodes=5, seed=args.seed + rnd,
-            )
-            print(f"\n  📊 Quick Eval (5 eps):")
-            print(f"     Axis  mean reward: {eval_results['axis_reward_mean']:.2f}")
-            print(f"     Soviet mean reward: {eval_results['soviet_reward_mean']:.2f}")
-            print(f"     Axis  mean σ: {eval_results['axis_sigma_mean']:.3f}")
-            print(f"     Soviet mean σ: {eval_results['soviet_sigma_mean']:.3f}")
-            print(f"     Survival rate: {eval_results['survival_rate']:.0%}")
-            print(f"     Avg ep length: {eval_results['avg_length']:.0f}")
+            # ── Quick eval ────────────────────────────────────────────────
+            if (axis_model is not None and soviet_model is not None
+                    and global_round % args.eval_every == 0):
+                eval_results = quick_eval(
+                    scenario_cfg, axis_model, soviet_model,
+                    max_steps=phase_max_steps,
+                    n_episodes=5, seed=args.seed + global_round,
+                )
+                print(f"\n  Eval (5 eps):")
+                print(f"    Axis  R={eval_results['axis_reward_mean']:+.1f}")
+                print(f"    Soviet R={eval_results['soviet_reward_mean']:+.1f}")
+                print(f"    AvgLen: {eval_results['avg_length']:.0f}  "
+                      f"Axis wins: {eval_results['axis_wins']}")
 
-            if args.wandb and HAS_WANDB:
-                wandb.log({
-                    "round": rnd,
-                    **{f"eval/{k}": v for k, v in eval_results.items()},
-                    "axis_train_time": axis_time,
-                    "soviet_train_time": soviet_time,
-                })
+                if args.wandb and HAS_WANDB:
+                    wandb.log({
+                        "phase": phase_num,
+                        "global_round": global_round,
+                        "lr": phase_lr,
+                        **{f"eval/{k}": v for k, v in eval_results.items()},
+                    })
 
-    # ── Final save ────────────────────────────────────────────────────── #
-    axis_model.save(str(log_dir / "axis_final"))
-    soviet_model.save(str(log_dir / "soviet_final"))
-    print(f"\n✅ Moscow training complete. Models saved to {log_dir}/")
+        elapsed_total = time.time() - t_start
+        print(f"\n  {phase_name} complete  ({elapsed_total / 60:.1f}min total)")
+
+    # ── Final save ────────────────────────────────────────────────────────
+    if axis_model is not None:
+        axis_model.save(str(log_dir / "axis_final"))
+    if soviet_model is not None:
+        soviet_model.save(str(log_dir / "soviet_final"))
+    total_time = time.time() - t_start
+    print(f"\n{'=' * 60}")
+    print(f"  MOSCOW 6-PHASE TRAINING COMPLETE (CoW-native)")
+    print(f"  Total time: {total_time / 60:.1f} minutes")
+    print(f"  Models: {log_dir}/axis_final.zip, soviet_final.zip")
+    print(f"{'=' * 60}")
 
     if args.wandb and HAS_WANDB:
         wandb.finish()
@@ -545,104 +587,76 @@ def train_selfplay(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────── #
 
 def quick_eval(
-    regime_config: Dict[str, Any],
+    scenario_cfg: Dict[str, Any],
     axis_model: Any,
     soviet_model: Any,
-    plugins_factory=None,
-    plugin_configs: Optional[Dict[str, Dict]] = None,
+    max_steps: int = 200,
     n_episodes: int = 5,
     seed: int = 99999,
 ) -> Dict[str, float]:
-    """Run evaluation episodes with plugins active."""
+    """Run evaluation episodes. Axis acts, Soviet is opponent."""
     import torch
 
-    plugins = plugins_factory() if plugins_factory else []
-    env = make_moscow_env(
-        regime_config,
-        trainable_side=AXIS,
-        opponent_policy=None,
-        plugins=plugins,
-        plugin_configs=plugin_configs,
-        seed=seed,
-    )
-
     axis_rewards, soviet_rewards = [], []
-    axis_sigmas, soviet_sigmas = [], []
     ep_lengths = []
-    survivals = 0
+    axis_wins = 0
 
     with torch.no_grad():
         for ep in range(n_episodes):
-            obs_dict = env._inner._ma_env.reset(seed=seed + ep)
+            # Wrap soviet model predict as opponent policy
+            sov_lstm_state = None
+            sov_starts = np.ones((1,), dtype=bool)
 
-            axis_obs   = obs_dict[AXIS]
-            soviet_obs = obs_dict[SOVIET]
-            ax_lstm, sv_lstm = None, None
+            def soviet_opp(obs):
+                nonlocal sov_lstm_state, sov_starts
+                act, sov_lstm_state = soviet_model.predict(
+                    obs.reshape(1, -1), state=sov_lstm_state,
+                    episode_start=sov_starts, deterministic=True,
+                )
+                sov_starts = np.zeros((1,), dtype=bool)
+                return act.flatten()
+
+            env = make_moscow_env(
+                scenario_cfg, faction_id=AXIS,
+                opponent_faction_id=SOVIET,
+                opponent_policy=soviet_opp,
+                max_steps=max_steps,
+                seed=seed + ep,
+            )
+
+            obs, info = env.reset()
+            ax_lstm = None
             ax_starts = np.ones((1,), dtype=bool)
-            sv_starts = np.ones((1,), dtype=bool)
-
-            ax_total_r, sv_total_r = 0.0, 0.0
+            ax_total_r = 0.0
+            sov_lstm_state = None
+            sov_starts = np.ones((1,), dtype=bool)
             done, trunc = False, False
             steps = 0
 
-            # Reset plugins
-            world = env._inner._ma_env._world
-            for plugin in plugins:
-                try:
-                    plugin.on_reset(world, engine=env, env=env._inner)
-                except TypeError:
-                    plugin.on_reset(world)
-
             while not (done or trunc):
                 ax_act, ax_lstm = axis_model.predict(
-                    axis_obs.reshape(1, -1), state=ax_lstm,
+                    obs.reshape(1, -1), state=ax_lstm,
                     episode_start=ax_starts, deterministic=True,
                 )
-                sv_act, sv_lstm = soviet_model.predict(
-                    soviet_obs.reshape(1, -1), state=sv_lstm,
-                    episode_start=sv_starts, deterministic=True,
-                )
-
-                actions = {AXIS: int(ax_act[0]), SOVIET: int(sv_act[0])}
-                obs_dict, rewards, done, trunc, info = env._inner._ma_env.step(actions)
-
-                # Apply plugins
-                ma_env = env._inner._ma_env
-                world = ma_env._world
-                for plugin in plugins:
-                    if plugin.enabled:
-                        try:
-                            new_w = plugin.on_step(world, steps, actions={}, observations={}, rewards=rewards)
-                            if new_w is not None:
-                                world = new_w
-                        except Exception:
-                            pass
-                ma_env._world = world
-
-                axis_obs   = obs_dict[AXIS]
-                soviet_obs = obs_dict[SOVIET]
-                ax_starts  = np.zeros((1,), dtype=bool)
-                sv_starts  = np.zeros((1,), dtype=bool)
-
-                ax_total_r += rewards[AXIS]
-                sv_total_r += rewards[SOVIET]
+                obs, reward, done, trunc, info = env.step(ax_act.flatten())
+                ax_starts = np.zeros((1,), dtype=bool)
+                ax_total_r += reward
                 steps += 1
 
+            victory = info.get("victory", {})
+            if victory.get("winner") == AXIS:
+                axis_wins += 1
+
             axis_rewards.append(ax_total_r)
-            soviet_rewards.append(sv_total_r)
-            axis_sigmas.append(info.get("axis_mean_sigma", 0.0))
-            soviet_sigmas.append(info.get("soviet_mean_sigma", 0.0))
+            soviet_rewards.append(-ax_total_r)
             ep_lengths.append(steps)
-            if not done:
-                survivals += 1
 
     return {
         "axis_reward_mean": float(np.mean(axis_rewards)),
         "soviet_reward_mean": float(np.mean(soviet_rewards)),
-        "axis_sigma_mean": float(np.mean(axis_sigmas)),
-        "soviet_sigma_mean": float(np.mean(soviet_sigmas)),
-        "survival_rate": survivals / max(n_episodes, 1),
         "avg_length": float(np.mean(ep_lengths)),
+        "axis_wins": axis_wins,
+        "soviet_wins": n_episodes - axis_wins,
     }
 
 
@@ -651,48 +665,30 @@ def quick_eval(
 # ─────────────────────────────────────────────────────────────────────────── #
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Battle of Moscow Self-Play Training")
+    p = argparse.ArgumentParser(
+        description="Battle of Moscow Self-Play Training (CoW-native)")
     p.add_argument("--regime-file", type=str, default=None,
                    help="Path to moscow.yaml (auto-detected if None)")
-    p.add_argument("--pretrained", type=str, default=None,
-                   help="Pretrained model to initialize both agents from")
     p.add_argument("--resume-from", type=str, default=None,
                    help="Directory with round checkpoint to resume from")
     p.add_argument("--log-dir", type=str, default="logs/moscow_selfplay",
                    help="Output directory for models and logs")
-    p.add_argument("--plugins", nargs="+", default=MOSCOW_PLUGINS,
-                   help="Plugin names to activate during training")
-    p.add_argument("--total-rounds", type=int, default=10,
-                   help="Number of self-play rounds")
     p.add_argument("--steps-per-round", type=int, default=50000,
                    help="Training steps per side per round")
-    p.add_argument("--n-envs", type=int, default=4,
+    p.add_argument("--n-envs", type=int, default=8,
                    help="Parallel envs for training")
-    p.add_argument("--n-steps", type=int, default=256,
+    p.add_argument("--n-steps", type=int, default=512,
                    help="Rollout steps per env per update")
-    p.add_argument("--batch-size", type=int, default=64,
-                   help="Minibatch size")
-    p.add_argument("--n-epochs", type=int, default=4,
-                   help="PPO epochs per update")
-    p.add_argument("--lr", type=float, default=3e-4,
-                   help="Learning rate")
-    p.add_argument("--gamma", type=float, default=0.99,
-                   help="Discount factor")
-    p.add_argument("--ent-coef", type=float, default=0.01,
-                   help="Entropy coefficient")
-    p.add_argument("--lstm-hidden", type=int, default=128,
-                   help="LSTM hidden size")
-    p.add_argument("--device", type=str, default="auto",
-                   help="Torch device (auto/cpu/cuda)")
+    p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--n-epochs", type=int, default=4)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--lstm-hidden", type=int, default=128)
+    p.add_argument("--device", type=str, default="auto")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--save-every", type=int, default=2,
-                   help="Save checkpoint every N rounds")
     p.add_argument("--eval-every", type=int, default=1,
                    help="Run quick eval every N rounds")
-    p.add_argument("--wandb", action="store_true",
-                   help="Log to Weights & Biases")
-    p.add_argument("--progress-bar", action="store_true",
-                   help="Show training progress bar")
+    p.add_argument("--wandb", action="store_true")
     return p.parse_args()
 
 

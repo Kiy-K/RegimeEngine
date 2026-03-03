@@ -82,12 +82,13 @@ Optional wrappers that add military and population modeling on top of the core s
 
 ### Military Extension (`extensions/military/`)
 
-- **`military_wrapper.py`** — `MilitaryWrapper` extending `GravitasEnv` with tactical military operations, unit movement, combat resolution, and supply logistics.
-- **`military_dynamics.py`** — Combat resolution, supply chains, victory conditions.
-- **`military_state.py`** — Unit and cluster military state dataclasses.
-- **`unit_types.py`** — 9 political unit types (Infantry, Armor, Artillery, etc.).
-- **`advanced_tactics.py`** — 6 combat tactics.
-- **`political_interface.py`** — Bidirectional military ↔ politics feedback system.
+- **`cow_combat.py`** — CoW-native combat engine with 34 unit types, UnitTraits system, and combat resolution.
+- **`military_dynamics.py`** — Combat dynamics, production, research, morale, and trait-based mechanics.
+- **`military_state.py`** — Unit and cluster military state dataclasses with physics integration.
+- **`military_wrapper.py`** — `MilitaryWrapper` Gymnasium environment with physics-enabled combat.
+- **`physics.py`** — Physics engine modeling terrain, weather, supply logistics, and line-of-sight.
+- **`physics_bridge.py`** — Integration layer between CoW military system and physics engine.
+- **`unit_types.py`** — Legacy unit type mappings for backward compatibility.
 
 ### Population Extension (`extensions/pop/`)
 
@@ -129,6 +130,8 @@ Scenario definitions including sector configs, initial states, alliances, shock 
    │
 2. env.reset(seed)
    │  → GravitasWorld initialized with cluster states, alliances
+   │  → Physics states initialized (terrain, weather, supply)
+   │  → Military units created from scenario config
    │  → Plugin.on_reset(world) called for each plugin
    │
 3. Loop: env.step(actions)
@@ -140,10 +143,12 @@ Scenario definitions including sector configs, initial states, alliances, shock 
    │  f. Alliance decay
    │  g. Population step (if enabled)
    │  h. Economy step (if enabled)
-   │  i. Volga reinforcement check (in-env, legacy)
-   │  j. Advance step counter
-   │  k. Compute per-side rewards
-   │  l. Build per-side observations
+   │  i. Physics step (terrain, weather, supply attrition)
+   │  j. Military step (CoW combat, production, movement)
+   │  k. Physics bridge integration (combat modifiers, LOS)
+   │  l. Advance step counter
+   │  m. Compute per-side rewards
+   │  n. Build per-side observations (including physics)
    │  │
    │  → Plugin.on_step(world, turn) called for each plugin
    │
@@ -163,12 +168,15 @@ Per-side observations include:
 - Alliance information
 - Previous action encoding
 - Economy indicators (if enabled)
+- Military units (34 types, HP, XP, traits)
+- Physics observations (terrain, weather, supply levels)
+- Line of sight and detection data
 
 ## Configuration System
 
-### Scenario YAML (`gravitas/scenarios/stalingrad.yaml`)
+### Scenario YAML (`gravitas/scenarios/moscow.yaml`, `stalingrad.yaml`)
 
-Defines the full scenario: GravitasParams overrides, sector definitions with initial states, alliance matrix, custom shock events, and training configuration.
+Defines the full scenario: GravitasParams overrides, sector definitions with initial states, alliance matrix, custom shock events, physics configuration, and training parameters. Moscow scenario includes physics-driven terrain/weather and 34 unit types.
 
 ### Unified Config (`configs/custom.yaml`)
 
@@ -203,31 +211,51 @@ Plugins are standalone modules that:
 
 `GravitasWorld` uses a copy-on-write pattern. All modifications create new instances via `copy_with_*` methods. This enables:
 
-- Safe plugin execution (plugins can't corrupt state).
-- Easy rollback and diffing between steps.
-- Thread-safe parallel episode execution.
+- Safe plugin execution (plugins can't corrupt state)
+- Easy rollback and diffing between steps
+- Thread-safe parallel episode execution
 
 ### Separate Orchestration Package
 
 The `gravitas/` package is deliberately separate from `gravitas_engine/` to:
 
-- Avoid circular imports (the original motivation).
-- Keep the core simulation pure and dependency-free.
-- Allow the orchestration layer to evolve independently.
-- Enable backward compatibility (existing code imports from `gravitas_engine/` unchanged).
+- Avoid circular imports (the original motivation)
+- Keep the core simulation pure and dependency-free
+- Allow the orchestration layer to evolve independently
+- Enable backward compatibility (existing code imports from `gravitas_engine/` unchanged)
 
 ### YAML-Driven Scenarios
 
 Scenarios are defined in YAML rather than Python to:
 
-- Allow non-programmers to create and modify scenarios.
-- Enable parameter sweeps without code changes.
-- Separate data (sector definitions) from logic (simulation engine).
+- Allow non-programmers to create and modify scenarios
+- Enable parameter sweeps without code changes
+- Separate data (sector definitions) from logic (simulation engine)
+- Support complex physics and military configurations
+
+### CoW-Native Military System
+
+The military system uses Call of War-style mechanics to:
+
+- Provide realistic tactical depth with 34 unit types and traits
+- Enable terrain and weather effects through physics integration
+- Support complex combat dynamics (suppression, breakthrough, morale)
+- Maintain compatibility with reinforcement learning training
+
+### Physics Integration
+
+Physics modeling adds realism by:
+
+- Simulating terrain effects on movement and combat
+- Modeling weather attrition and equipment reliability
+- Providing supply logistics and line-of-sight calculations
+- Creating dynamic environmental constraints for tactical decisions
 
 ### RecurrentPPO for Multi-Agent
 
 LSTM-based policies (RecurrentPPO from sb3-contrib) are used because:
 
-- The environment is partially observable (each side sees limited info).
-- Temporal context matters (reinforcement timing, shock patterns).
-- Memory helps agents learn long-horizon strategies (defend Volga for 50+ turns).
+- The environment is partially observable (each side sees limited info)
+- Temporal context matters (reinforcement timing, shock patterns)
+- Memory helps agents learn long-horizon strategies (defend Moscow for 50+ turns)
+- Complex physics and military systems require temporal reasoning.

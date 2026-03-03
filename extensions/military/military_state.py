@@ -1,727 +1,494 @@
 """
-standardized_state.py — Standardized military state definitions using enhanced units.
+military_state.py — Call of War native military state.
 
-This module replaces the old military_state.py with a clean, standardized implementation
-that uses only the new EnhancedMilitaryUnit system and removes all backward compatibility.
+Full rewrite: CoW-native buildings, production queues, research, faction
+economy, and cluster garrison state.  No backward compatibility with the
+old StandardizedMilitaryUnit / StandardizedClusterMilitaryState system.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Any, FrozenSet
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .unit_types import (
-    MilitaryUnitType, UnitRole, get_unit_role,
-    ExpandedUnitParams, EnhancedMilitaryUnit,
-    CombatMatrix, SupportCompany, SupportCompanyType
+from .cow_combat import (
+    CowUnit, CowArmy, CowUnitType, CowUnitCategory, CowArmorClass,
+    CowTerrain, CowDoctrine, CowProductionCost, CowBuildingType,
+    CowResearchProject, RESEARCH_TREE, BUILDING_COSTS, BUILDING_BUILD_TIME,
+    CATEGORY_BUILDING_REQ, MAX_BUILDING_LEVEL, required_building_level,
+    get_unit_stats, get_doctrine_mod, create_unit, reset_uid_counter,
+    nonlinear_production_cost, nonlinear_supply_drain,
+    production_cost as base_production_cost,
+    upgrade_cost as base_upgrade_cost,
 )
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Military Unit Parameters                                         #
+# Resource Vector                                                              #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-@dataclass(frozen=True)
-class StandardizedUnitParams:
-    """
-    Standardized unit parameters using ExpandedUnitParams as the single source of truth.
+N_RESOURCES = 5  # rations, steel, ammo, fuel, medical
+RES_RATIONS, RES_STEEL, RES_AMMO, RES_FUEL, RES_MEDICAL = range(5)
 
-    This replaces the old MilitaryUnitParams with its 6 hardcoded types and
-    uses the comprehensive 40-type system from unit_types.py.
-    """
-    # Core parameters (delegated to ExpandedUnitParams)
-    expanded_params: ExpandedUnitParams
-    combat_matrix: CombatMatrix
 
-    # Combat parameters (moved from old params)
-    combat_effectiveness_decay: float = 0.05
-    supply_consumption_rate: float = 0.01
-    reinforcement_rate: float = 0.02
-    attrition_rate: float = 0.005
+def cost_to_array(c: CowProductionCost) -> NDArray[np.float64]:
+    return np.array([c.rations, c.steel, c.ammo, c.fuel, c.medical], dtype=np.float64)
 
-    # Movement parameters
-    movement_cost_road: float = 1.0
-    movement_cost_rough: float = 1.5
-    movement_cost_mountain: float = 2.0
 
-    # Objective parameters
-    objective_capture_threshold: float = 0.7
-    objective_hold_duration: int = 5
+def can_afford(resources: NDArray[np.float64], cost: CowProductionCost) -> bool:
+    return bool(np.all(resources >= cost_to_array(cost) - 1e-9))
 
-    def get_combat_power(self, unit_type: MilitaryUnitType) -> float:
-        """Delegate to expanded params."""
-        return self.expanded_params.get_combat_power(unit_type)
 
-    def get_max_hp(self, unit_type: MilitaryUnitType) -> float:
-        """Delegate to expanded params."""
-        return self.expanded_params.get_max_hp(unit_type)
-
-    def get_speed(self, unit_type: MilitaryUnitType) -> float:
-        """Delegate to expanded params."""
-        return self.expanded_params.get_speed(unit_type)
-
-    def get_supply_cost(self, unit_type: MilitaryUnitType) -> float:
-        """Delegate to expanded params."""
-        return self.expanded_params.get_supply_cost(unit_type)
-
-    def get_combat_matrix_multiplier(
-        self,
-        attacker_type: MilitaryUnitType,
-        defender_type: MilitaryUnitType
-    ) -> float:
-        """Get combat effectiveness multiplier from matrix."""
-        return self.combat_matrix.get_damage_multiplier(attacker_type, defender_type)
-
-    @classmethod
-    def default(cls) -> 'StandardizedUnitParams':
-        """Create default standardized parameters."""
-        return cls(
-            expanded_params=ExpandedUnitParams(),
-            combat_matrix=CombatMatrix.default_matrix()
-        )
+def deduct(resources: NDArray[np.float64], cost: CowProductionCost) -> NDArray[np.float64]:
+    return np.maximum(0.0, resources - cost_to_array(cost))
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Military Unit                                                   #
+# Building                                                                     #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-@dataclass(frozen=True)
-class StandardizedMilitaryUnit:
-    """
-    Standardized military unit using EnhancedMilitaryUnit as the base.
-
-    This replaces the old MilitaryUnit class and adds standardization features.
-    """
-    unit_id: int
-    unit_type: MilitaryUnitType
-    cluster_id: int
-    hit_points: float
-    combat_effectiveness: float
-    supply_level: float
-    experience: float
-    morale: float
-    objective_id: Optional[int] = None
-    support_companies: Tuple[SupportCompany, ...] = ()
-    terrain_bonus: float = 1.0
-    entrenchment: float = 0.0
-    faction_id: Optional[int] = None  # Added for faction tracking
+@dataclass
+class CowBuilding:
+    """A building in a cluster."""
+    building_type: CowBuildingType
+    level: int = 0               # 0 = not built, 1-3 = operational
+    construction_progress: float = 0.0  # 0→1 while building, 1 = done
+    is_upgrading: bool = False
 
     @property
-    def is_alive(self) -> bool:
-        """Check if unit has any hit points remaining."""
-        return self.hit_points > 0.01
+    def is_operational(self) -> bool:
+        return self.level > 0 and self.construction_progress >= 1.0
 
     @property
-    def combat_power(self) -> float:
-        """Current combat power considering all factors."""
-        base_power = self.hit_points * self.combat_effectiveness
+    def fortification_value(self) -> float:
+        if self.building_type != CowBuildingType.BUNKER or not self.is_operational:
+            return 0.0
+        return 0.10 * self.level  # L1=10%, L2=20%, L3=30%
 
-        # Apply support company bonuses
-        support_bonuses = self._calculate_support_bonuses()
-        combat_multiplier = 1.0 + support_bonuses.get('combat_effectiveness', 0.0)
+    def supply_regen_bonus(self) -> float:
+        if self.building_type != CowBuildingType.SUPPLY_DEPOT or not self.is_operational:
+            return 0.0
+        return 0.5 * self.level  # L1 +0.5, L2 +1.0, L3 +1.5 per step
 
-        return base_power * combat_multiplier * self.terrain_bonus * (1.0 + self.entrenchment * 0.5)
+    def can_produce_category(self, cat: CowUnitCategory) -> bool:
+        req = CATEGORY_BUILDING_REQ.get(cat)
+        return (req is not None and req == self.building_type
+                and self.is_operational)
 
-    def _calculate_support_bonuses(self) -> Dict[str, float]:
-        """Calculate cumulative bonuses from support companies."""
-        bonuses = {}
+    def max_producible_level(self) -> int:
+        if not self.is_operational:
+            return 0
+        return min(self.level, MAX_BUILDING_LEVEL)
 
-        for company in self.support_companies:
-            company_bonuses = company.get_bonuses()
-            for bonus_type, value in company_bonuses.items():
-                bonuses[bonus_type] = bonuses.get(bonus_type, 0.0) + value
-
-        return bonuses
-
-    def get_attack_values(self, params: StandardizedUnitParams) -> Dict[str, float]:
-        """Get attack values for different damage types."""
-        base_stats = params.expanded_params.unit_params.get(self.unit_type, {})
-        support_bonuses = self._calculate_support_bonuses()
-
-        attack_values = {
-            'soft_attack': base_stats.get('soft_attack', 1.0) + support_bonuses.get('soft_attack', 0.0),
-            'hard_attack': base_stats.get('hard_attack', 0.5) + support_bonuses.get('hard_attack', 0.0),
-            'air_attack': base_stats.get('air_attack', 0.0) + support_bonuses.get('air_attack', 0.0),
-        }
-
-        return attack_values
-
-    def get_defense_values(self, params: StandardizedUnitParams) -> Dict[str, float]:
-        """Get defense values for different damage types."""
-        base_stats = params.expanded_params.unit_params.get(self.unit_type, {})
-        support_bonuses = self._calculate_support_bonuses()
-
-        defense_values = {
-            'defense': base_stats.get('defense', 1.0) + support_bonuses.get('defense', 0.0),
-            'breakthrough': base_stats.get('breakthrough', 0.3) + support_bonuses.get('breakthrough', 0.0),
-            'air_defense': base_stats.get('air_defense', 0.0) + support_bonuses.get('air_defense', 0.0),
-            'armor': base_stats.get('armor', 0.0) + support_bonuses.get('armor', 0.0),
-        }
-
-        return defense_values
-
-    def copy_with(
-        self,
-        cluster_id: Optional[int] = None,
-        hit_points: Optional[float] = None,
-        combat_effectiveness: Optional[float] = None,
-        supply_level: Optional[float] = None,
-        experience: Optional[float] = None,
-        morale: Optional[float] = None,
-        objective_id: Optional[int] = None,
-        support_companies: Optional[Tuple[SupportCompany, ...]] = None,
-        terrain_bonus: Optional[float] = None,
-        entrenchment: Optional[float] = None,
-        faction_id: Optional[int] = None,
-    ) -> 'StandardizedMilitaryUnit':
-        """Create a modified copy of this unit."""
-        return StandardizedMilitaryUnit(
-            unit_id=self.unit_id,
-            unit_type=self.unit_type,
-            cluster_id=cluster_id if cluster_id is not None else self.cluster_id,
-            hit_points=hit_points if hit_points is not None else self.hit_points,
-            combat_effectiveness=combat_effectiveness if combat_effectiveness is not None else self.combat_effectiveness,
-            supply_level=supply_level if supply_level is not None else self.supply_level,
-            experience=experience if experience is not None else self.experience,
-            morale=morale if morale is not None else self.morale,
-            objective_id=objective_id if objective_id is not None else self.objective_id,
-            support_companies=support_companies if support_companies is not None else self.support_companies,
-            terrain_bonus=terrain_bonus if terrain_bonus is not None else self.terrain_bonus,
-            entrenchment=entrenchment if entrenchment is not None else self.entrenchment,
-            faction_id=faction_id if faction_id is not None else self.faction_id,
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert unit to dictionary for serialization."""
-        return {
-            'unit_id': self.unit_id,
-            'unit_type': self.unit_type.name,
-            'cluster_id': self.cluster_id,
-            'hit_points': self.hit_points,
-            'combat_effectiveness': self.combat_effectiveness,
-            'supply_level': self.supply_level,
-            'experience': self.experience,
-            'morale': self.morale,
-            'objective_id': self.objective_id,
-            'support_companies': [c.company_type.name for c in self.support_companies],
-            'terrain_bonus': self.terrain_bonus,
-            'entrenchment': self.entrenchment,
-            'faction_id': self.faction_id,
-        }
-
-    def add_support_company(self, company: SupportCompany) -> 'StandardizedMilitaryUnit':
-        """Add a support company to this unit."""
-        new_companies = (*self.support_companies, company)
-        return self.copy_with(support_companies=new_companies)
-
-    def remove_support_company(self, company_type: SupportCompanyType) -> 'StandardizedMilitaryUnit':
-        """Remove a support company from this unit."""
-        new_companies = tuple(c for c in self.support_companies if c.company_type != company_type)
-        return self.copy_with(support_companies=new_companies)
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Cluster Military State                                           #
+# Production & Research Queues                                                 #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-@dataclass(frozen=True)
-class StandardizedClusterMilitaryState:
-    """
-    Standardized military state for a single cluster.
-
-    Tracks units present, supply levels, control status, and faction presence.
-    """
-    cluster_id: int
-    units: Tuple[StandardizedMilitaryUnit, ...]
-    supply_depot: float
-    is_controlled: bool
-    controlling_faction: Optional[int] = None
-    reinforcement_timer: float = 0.0
-    faction_presence: Dict[int, float] = None  # faction_id -> presence strength
-
-    def __post_init__(self):
-        if self.faction_presence is None:
-            object.__setattr__(self, 'faction_presence', {})
+@dataclass
+class ProductionQueueItem:
+    unit_type: CowUnitType
+    level: int
+    remaining_steps: float
+    total_steps: float
+    cost_paid: CowProductionCost
 
     @property
-    def total_combat_power(self) -> float:
-        """Total combat power of all units in this cluster."""
-        return sum(unit.combat_power for unit in self.units if unit.is_alive)
+    def progress(self) -> float:
+        return max(0.0, 1.0 - self.remaining_steps / max(self.total_steps, 0.01))
+
+MAX_PRODUCTION_QUEUE = 3
+
+
+@dataclass
+class ResearchSlot:
+    project: CowResearchProject
+    remaining_steps: float
+    total_steps: float
 
     @property
-    def unit_count(self) -> int:
-        """Number of alive units in this cluster."""
-        return sum(1 for unit in self.units if unit.is_alive)
+    def progress(self) -> float:
+        return max(0.0, 1.0 - self.remaining_steps / max(self.total_steps, 0.01))
 
-    def supply_demand(self, params: StandardizedUnitParams) -> float:
-        """Total supply demand from all units."""
-        return sum(
-            unit.supply_level * params.get_supply_cost(unit.unit_type)
-            for unit in self.units if unit.is_alive
-        )
+MAX_CONCURRENT_RESEARCH = 2
 
-    def add_unit(self, unit: StandardizedMilitaryUnit) -> 'StandardizedClusterMilitaryState':
-        """Add a unit to this cluster."""
-        return self.copy_with(units=(*self.units, unit))
-
-    def remove_unit(self, unit_id: int) -> 'StandardizedClusterMilitaryState':
-        """Remove a unit from this cluster."""
-        new_units = tuple(u for u in self.units if u.unit_id != unit_id)
-        return self.copy_with(units=new_units)
-
-    def update_unit(self, unit: StandardizedMilitaryUnit) -> 'StandardizedClusterMilitaryState':
-        """Update a unit in this cluster."""
-        new_units = tuple(
-            u if u.unit_id != unit.unit_id else unit
-            for u in self.units
-        )
-        return self.copy_with(units=new_units)
-
-    def copy_with(
-        self,
-        units: Optional[Tuple[StandardizedMilitaryUnit, ...]] = None,
-        supply_depot: Optional[float] = None,
-        is_controlled: Optional[bool] = None,
-        controlling_faction: Optional[int] = None,
-        reinforcement_timer: Optional[float] = None,
-        faction_presence: Optional[Dict[int, float]] = None,
-    ) -> 'StandardizedClusterMilitaryState':
-        """Create a modified copy of this cluster state."""
-        return StandardizedClusterMilitaryState(
-            cluster_id=self.cluster_id,
-            units=units if units is not None else self.units,
-            supply_depot=supply_depot if supply_depot is not None else self.supply_depot,
-            is_controlled=is_controlled if is_controlled is not None else self.is_controlled,
-            controlling_faction=controlling_faction if controlling_faction is not None else self.controlling_faction,
-            reinforcement_timer=reinforcement_timer if reinforcement_timer is not None else self.reinforcement_timer,
-            faction_presence=faction_presence if faction_presence is not None else self.faction_presence,
-        )
-
-    def update_faction_presence(self) -> 'StandardizedClusterMilitaryState':
-        """Update faction presence based on current units."""
-        new_presence = {}
-
-        for unit in self.units:
-            if unit.is_alive and unit.faction_id is not None:
-                current = new_presence.get(unit.faction_id, 0.0)
-                new_presence[unit.faction_id] = current + unit.combat_power
-
-        return self.copy_with(faction_presence=new_presence)
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Standardized World Military State                                             #
+# Objective                                                                    #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-@dataclass(frozen=True)
-class StandardizedWorldMilitaryState:
-    """
-    Standardized global military state containing all clusters and objectives.
-    """
-    clusters: Tuple[StandardizedClusterMilitaryState, ...]
-    objectives: Tuple['StandardizedMilitaryObjective', ...]
-    global_supply: float
-    global_reinforcement_pool: float
-    step: int
-    next_unit_id: int = 1
-    factions: Dict[int, Dict[str, Any]] = None  # faction_id -> faction data
-
-    def __post_init__(self):
-        if self.factions is None:
-            object.__setattr__(self, 'factions', {})
-
-    @property
-    def total_combat_power(self) -> float:
-        """Total combat power across all clusters."""
-        return sum(c.total_combat_power for c in self.clusters)
-
-    @property
-    def total_unit_count(self) -> int:
-        """Total number of alive units."""
-        return sum(c.unit_count for c in self.clusters)
-
-    def get_cluster(self, cluster_id: int) -> Optional[StandardizedClusterMilitaryState]:
-        """Get military state for a specific cluster."""
-        for cluster in self.clusters:
-            if cluster.cluster_id == cluster_id:
-                return cluster
-        return None
-
-    def copy_with_clusters(self, new_clusters: Tuple[StandardizedClusterMilitaryState, ...]) -> 'StandardizedWorldMilitaryState':
-        """Create a copy with updated clusters."""
-        return StandardizedWorldMilitaryState(
-            clusters=new_clusters,
-            objectives=self.objectives,
-            global_supply=self.global_supply,
-            global_reinforcement_pool=self.global_reinforcement_pool,
-            step=self.step,
-            next_unit_id=self.next_unit_id,
-            factions=self.factions,
-        )
-
-    def advance_step(self) -> 'StandardizedWorldMilitaryState':
-        """Advance to next step."""
-        return self.copy_with(step=self.step + 1)
-
-    def copy_with(
-        self,
-        clusters: Optional[Tuple[StandardizedClusterMilitaryState, ...]] = None,
-        objectives: Optional[Tuple['StandardizedMilitaryObjective', ...]] = None,
-        global_supply: Optional[float] = None,
-        global_reinforcement_pool: Optional[float] = None,
-        step: Optional[int] = None,
-        next_unit_id: Optional[int] = None,
-        factions: Optional[Dict[int, Dict[str, Any]]] = None,
-    ) -> 'StandardizedWorldMilitaryState':
-        """Create a modified copy of this world state."""
-        return StandardizedWorldMilitaryState(
-            clusters=clusters if clusters is not None else self.clusters,
-            objectives=objectives if objectives is not None else self.objectives,
-            global_supply=global_supply if global_supply is not None else self.global_supply,
-            global_reinforcement_pool=global_reinforcement_pool if global_reinforcement_pool is not None else self.global_reinforcement_pool,
-            step=step if step is not None else self.step,
-            next_unit_id=next_unit_id if next_unit_id is not None else self.next_unit_id,
-            factions=factions if factions is not None else self.factions,
-        )
-
-    def add_faction(self, faction_id: int, name: str, **kwargs) -> 'StandardizedWorldMilitaryState':
-        """Add a new faction to the world state."""
-        new_factions = dict(self.factions)
-        new_factions[faction_id] = {'name': name, **kwargs}
-        return self.copy_with(factions=new_factions)
-
-# ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Military Objectives                                             #
-# ─────────────────────────────────────────────────────────────────────────── #
-
-@dataclass(frozen=True)
-class StandardizedMilitaryObjective:
-    """
-    Standardized military objective with faction tracking.
-
-    Objectives provide structure to military operations and contribute to
-    victory conditions.
-    """
+@dataclass
+class MilitaryObjective:
     objective_id: int
     name: str
-    objective_type: str  # "capture", "hold", "destroy", "escort", etc.
+    objective_type: str       # "capture", "hold", "destroy"
     target_cluster_id: int
-    required_units: int
+    required_strength: float  # total HP required to capture/hold
     reward_value: float
-    faction_id: Optional[int] = None  # Which faction owns this objective
+    faction_id: int
     completion_progress: float = 0.0
     is_completed: bool = False
-    completion_step: Optional[int] = None
+    hold_steps: int = 0       # how many steps held so far
+    hold_required: int = 5    # how many steps must be held
 
-    def update_progress(self, progress_delta: float, current_step: int) -> 'StandardizedMilitaryObjective':
-        """Update objective progress."""
-        new_progress = min(1.0, self.completion_progress + progress_delta)
-        new_completed = new_progress >= 0.99
-        new_completion_step = current_step if new_completed and not self.is_completed else self.completion_step
 
-        return self.copy_with(
-            completion_progress=new_progress,
-            is_completed=new_completed,
-            completion_step=new_completion_step,
+# ─────────────────────────────────────────────────────────────────────────── #
+# Cluster State                                                                #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+@dataclass
+class CowClusterState:
+    """State of a single map cluster/province."""
+    cluster_id: int
+    terrain: CowTerrain
+    owner_faction: Optional[int]
+
+    # Garrison
+    units: List[CowUnit] = field(default_factory=list)
+
+    # Buildings (keyed by CowBuildingType)
+    buildings: Dict[CowBuildingType, CowBuilding] = field(default_factory=dict)
+
+    # Production queue (max MAX_PRODUCTION_QUEUE items)
+    production_queue: List[ProductionQueueItem] = field(default_factory=list)
+
+    # Local supply pool (consumed by garrison, replenished by depot + global)
+    supply: float = 10.0
+
+    # Rounds of combat this cluster has seen recently (decays over time)
+    recent_combat_rounds: int = 0
+
+    def __post_init__(self):
+        # Ensure all building types exist
+        for bt in CowBuildingType:
+            if bt not in self.buildings:
+                self.buildings[bt] = CowBuilding(bt, level=0, construction_progress=1.0)
+
+    @property
+    def alive_units(self) -> List[CowUnit]:
+        return [u for u in self.units if u.is_alive]
+
+    @property
+    def fortification(self) -> float:
+        bunker = self.buildings.get(CowBuildingType.BUNKER)
+        return bunker.fortification_value if bunker else 0.0
+
+    @property
+    def supply_regen(self) -> float:
+        base = 0.5  # natural regen
+        depot = self.buildings.get(CowBuildingType.SUPPLY_DEPOT)
+        if depot:
+            base += depot.supply_regen_bonus()
+        return base
+
+    def units_of_faction(self, fid: int) -> List[CowUnit]:
+        return [u for u in self.alive_units if u.faction_id == fid]
+
+    def faction_strength(self, fid: int) -> float:
+        return sum(u.hp for u in self.units_of_faction(fid))
+
+    def dominant_faction(self) -> Optional[int]:
+        strengths: Dict[int, float] = {}
+        for u in self.alive_units:
+            strengths[u.faction_id] = strengths.get(u.faction_id, 0.0) + u.hp
+        if not strengths:
+            return self.owner_faction
+        return max(strengths, key=strengths.get)
+
+    def building_level(self, bt: CowBuildingType) -> int:
+        b = self.buildings.get(bt)
+        return b.level if b and b.is_operational else 0
+
+    def can_produce(self, unit_type: CowUnitType, level: int) -> bool:
+        stats = get_unit_stats(unit_type, level)
+        req_building = CATEGORY_BUILDING_REQ.get(stats.category)
+        if req_building is None:
+            return False
+        b = self.buildings.get(req_building)
+        if b is None or not b.is_operational:
+            return False
+        if b.level < required_building_level(level):
+            return False
+        if len(self.production_queue) >= MAX_PRODUCTION_QUEUE:
+            return False
+        return True
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# External Modifiers (from national spirit + government)                       #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+@dataclass
+class CowExternalModifiers:
+    """Modifiers injected from regime-level systems (national spirit, government).
+
+    These scale CoW military dynamics without changing core combat code.
+    All multipliers default to neutral (1.0); all additive mods default to 0.
+    """
+    # Production
+    production_cost_mult: float = 1.0       # from government.military_cost
+    production_speed_mult: float = 1.0      # from spirit.industry_mod (higher = faster)
+
+    # Combat
+    combat_effectiveness: float = 1.0       # combined spirit + government
+    morale_mod: float = 0.0                 # additive spirit.morale_mod
+
+    # Economy
+    resource_income_mult: float = 1.0       # from spirit.resource_production_mod
+
+    # Terrain special flags
+    winter_adapted: bool = False            # from spirit.winter_adapted
+    partisan_bonus: bool = False            # from spirit.partisan_bonus
+    scorched_earth: bool = False            # from spirit.scorched_earth
+
+    # Organisation (regime-level feedback)
+    org_factor: float = 1.0                 # 0.5-1.0 from org_action_factor
+    hazard_resistance: float = 0.0          # from spirit.hazard_resistance
+
+    # Exhaustion
+    exhaustion_rate_mod: float = 0.0        # from spirit.exhaustion_rate_mod
+    exhaustion_recovery_mod: float = 0.0    # from spirit.exhaustion_recovery_mod
+
+    # Cohesion / propaganda
+    cohesion_mod: float = 0.0               # from spirit.cohesion_mod
+    propaganda_mod: float = 0.0             # from spirit.propaganda_mod
+
+
+def merge_modifiers(a: CowExternalModifiers, b: CowExternalModifiers) -> CowExternalModifiers:
+    """Combine two modifier sources (e.g. spirit + government)."""
+    return CowExternalModifiers(
+        production_cost_mult=a.production_cost_mult * b.production_cost_mult,
+        production_speed_mult=a.production_speed_mult * b.production_speed_mult,
+        combat_effectiveness=a.combat_effectiveness * b.combat_effectiveness,
+        morale_mod=a.morale_mod + b.morale_mod,
+        resource_income_mult=a.resource_income_mult * b.resource_income_mult,
+        winter_adapted=a.winter_adapted or b.winter_adapted,
+        partisan_bonus=a.partisan_bonus or b.partisan_bonus,
+        scorched_earth=a.scorched_earth or b.scorched_earth,
+        org_factor=a.org_factor * b.org_factor,
+        hazard_resistance=a.hazard_resistance + b.hazard_resistance,
+        exhaustion_rate_mod=a.exhaustion_rate_mod + b.exhaustion_rate_mod,
+        exhaustion_recovery_mod=a.exhaustion_recovery_mod + b.exhaustion_recovery_mod,
+        cohesion_mod=a.cohesion_mod + b.cohesion_mod,
+        propaganda_mod=a.propaganda_mod + b.propaganda_mod,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# Faction State                                                                #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+@dataclass
+class CowFactionState:
+    """Per-faction global state."""
+    faction_id: int
+    name: str
+    doctrine: CowDoctrine
+
+    # Global resources (rations, steel, ammo, fuel, medical)
+    resources: NDArray[np.float64] = field(
+        default_factory=lambda: np.array([20.0, 15.0, 10.0, 10.0, 5.0], dtype=np.float64))
+
+    # Resource income per step (before sector production multipliers)
+    base_income: NDArray[np.float64] = field(
+        default_factory=lambda: np.array([3.0, 2.0, 1.5, 1.0, 0.5], dtype=np.float64))
+
+    # Research slots (max MAX_CONCURRENT_RESEARCH)
+    research_slots: List[ResearchSlot] = field(default_factory=list)
+
+    # Completed research: set of (CowUnitType, level)
+    researched: FrozenSet[Tuple[CowUnitType, int]] = field(
+        default_factory=lambda: frozenset({(ut, 1) for ut in CowUnitType}))
+
+    # Controlled cluster ids
+    controlled_clusters: List[int] = field(default_factory=list)
+
+    # Morale modifier (global, affects all units)
+    global_morale: float = 1.0
+
+    # External modifiers from national spirit + government
+    external_modifiers: CowExternalModifiers = field(default_factory=CowExternalModifiers)
+
+    def has_researched(self, unit_type: CowUnitType, level: int) -> bool:
+        return (unit_type, level) in self.researched
+
+    def max_researched_level(self, unit_type: CowUnitType) -> int:
+        return max((lvl for ut, lvl in self.researched if ut == unit_type), default=0)
+
+    def can_start_research(self, unit_type: CowUnitType, level: int) -> bool:
+        if self.has_researched(unit_type, level):
+            return False
+        if len(self.research_slots) >= MAX_CONCURRENT_RESEARCH:
+            return False
+        proj = RESEARCH_TREE.get((unit_type, level))
+        if proj is None:
+            return False
+        if proj.prerequisite and not self.has_researched(*proj.prerequisite):
+            return False
+        if not can_afford(self.resources, proj.cost):
+            return False
+        return True
+
+    def total_units(self, world: 'CowWorldState') -> int:
+        return sum(
+            len(world.clusters[cid].units_of_faction(self.faction_id))
+            for cid in range(len(world.clusters))
         )
 
-    def copy_with(
-        self,
-        completion_progress: Optional[float] = None,
-        is_completed: Optional[bool] = None,
-        completion_step: Optional[int] = None,
-        faction_id: Optional[int] = None,
-    ) -> 'StandardizedMilitaryObjective':
-        """Create a modified copy of this objective."""
-        return StandardizedMilitaryObjective(
-            objective_id=self.objective_id,
-            name=self.name,
-            objective_type=self.objective_type,
-            target_cluster_id=self.target_cluster_id,
-            required_units=self.required_units,
-            reward_value=self.reward_value,
-            faction_id=faction_id if faction_id is not None else self.faction_id,
-            completion_progress=completion_progress if completion_progress is not None else self.completion_progress,
-            is_completed=is_completed if is_completed is not None else self.is_completed,
-            completion_step=completion_step if completion_step is not None else self.completion_step,
+    def count_of_type(self, world: 'CowWorldState', ut: CowUnitType) -> int:
+        return sum(
+            1 for cid in range(len(world.clusters))
+            for u in world.clusters[cid].units_of_faction(self.faction_id)
+            if u.stats.unit_type == ut
         )
 
-# ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Combat Functions                                                 #
-# ─────────────────────────────────────────────────────────────────────────── #
-
-def calculate_standardized_damage(
-    attacker: StandardizedMilitaryUnit,
-    defender: StandardizedMilitaryUnit,
-    params: StandardizedUnitParams,
-    terrain_factor: float = 1.0,
-    is_surprise_attack: bool = False,
-    is_flanked: bool = False,
-    is_entrenchment_advantage: bool = False,
-) -> Tuple[float, float]:
-    """
-    Calculate damage between two units using standardized combat system.
-
-    This replaces the old calculate_damage function with enhanced features.
-    """
-    # Get attack and defense values
-    attacker_stats = attacker.get_attack_values(params)
-    defender_stats = defender.get_defense_values(params)
-
-    # Get combat matrix multiplier
-    matrix_multiplier = params.get_combat_matrix_multiplier(attacker.unit_type, defender.unit_type)
-
-    # Calculate base combat power
-    attacker_power = attacker.combat_power
-    defender_power = defender.combat_power * terrain_factor
-
-    # Apply tactical modifiers
-    if is_surprise_attack:
-        attacker_power *= 1.5
-    if is_flanked:
-        defender_power *= 0.7
-    if is_entrenchment_advantage:
-        defender_power *= 1.3
-
-    # Calculate base damage using attacker/defender power ratio
-    total_power = attacker_power + defender_power
-    if total_power < 0.01:  # Avoid division by zero
-        return 0.0, 0.0
-
-    attacker_damage_ratio = defender_power / total_power
-    defender_damage_ratio = attacker_power / total_power
-
-    base_attacker_damage = attacker_damage_ratio * attacker_power * 0.2
-    base_defender_damage = defender_damage_ratio * defender_power * 0.2
-
-    # Apply combat matrix
-    base_attacker_damage *= matrix_multiplier
-    base_defender_damage *= params.get_combat_matrix_multiplier(defender.unit_type, attacker.unit_type)
-
-    # Apply random variation
-    attacker_damage = base_attacker_damage * (0.9 + 0.2 * np.random.random())
-    defender_damage = base_defender_damage * (0.9 + 0.2 * np.random.random())
-
-    return attacker_damage, defender_damage
-
-def resolve_standardized_combat(
-    attacker: StandardizedMilitaryUnit,
-    defender: StandardizedMilitaryUnit,
-    params: StandardizedUnitParams,
-    terrain_advantage: float = 1.0,
-    is_surprise_attack: bool = False,
-    is_flanked: bool = False,
-    is_entrenchment_advantage: bool = False,
-) -> Tuple[StandardizedMilitaryUnit, StandardizedMilitaryUnit]:
-    """
-    Resolve combat between two standardized units with enhanced combat features.
-
-    This replaces the old resolve_combat and resolve_enhanced_combat functions.
-    """
-    # Calculate damage
-    attacker_damage, defender_damage = calculate_standardized_damage(
-        attacker, defender, params, terrain_advantage,
-        is_surprise_attack, is_flanked, is_entrenchment_advantage
-    )
-
-    # Apply damage with some randomness
-    attacker_hp_loss = min(attacker.hit_points * 0.9, attacker_damage)
-    defender_hp_loss = min(defender.hit_points * 0.9, defender_damage)
-
-    # Update combat effectiveness (degrades with combat)
-    effectiveness_decay = params.combat_effectiveness_decay
-    attacker_effectiveness = max(0.1, attacker.combat_effectiveness - effectiveness_decay)
-    defender_effectiveness = max(0.1, defender.combat_effectiveness - effectiveness_decay)
-
-    # Update morale based on combat outcome
-    attacker_morale_delta = -0.05 + (defender_damage - attacker_damage) * 0.001
-    defender_morale_delta = -0.05 + (attacker_damage - defender_damage) * 0.001
-
-    # Update units
-    updated_attacker = attacker.copy_with(
-        hit_points=attacker.hit_points - attacker_hp_loss,
-        combat_effectiveness=attacker_effectiveness,
-        experience=min(10.0, attacker.experience + 0.1),
-        morale=max(0.1, attacker.morale + attacker_morale_delta)
-    )
-
-    updated_defender = defender.copy_with(
-        hit_points=defender.hit_points - defender_hp_loss,
-        combat_effectiveness=defender_effectiveness,
-        experience=min(10.0, defender.experience + 0.1),
-        morale=max(0.1, defender.morale + defender_morale_delta)
-    )
-
-    return updated_attacker, updated_defender
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Standardized Initialization                                                    #
+# World State                                                                  #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-def initialize_standardized_military_state(
+@dataclass
+class CowWorldState:
+    """Top-level game state."""
+    clusters: List[CowClusterState]
+    factions: Dict[int, CowFactionState]
+    objectives: List[MilitaryObjective]
+    adjacency: NDArray[np.bool_]   # (n_clusters, n_clusters) boolean
+    step: int = 0
+
+    # Physics integration (populated by military_wrapper if physics enabled)
+    physics_states: Optional[List[Any]] = None   # List[SectorPhysicsState]
+    los_state: Optional[Any] = None              # LOSState
+    physics_config: Optional[Any] = None         # MapPhysicsConfig
+    physics_modifiers: Optional[Dict[int, Any]] = None  # {cluster_id: PhysicsModifiers}
+
+    @property
+    def n_clusters(self) -> int:
+        return len(self.clusters)
+
+    def get_cluster(self, cid: int) -> CowClusterState:
+        return self.clusters[cid]
+
+    def get_faction(self, fid: int) -> CowFactionState:
+        return self.factions[fid]
+
+    def neighbors(self, cid: int) -> List[int]:
+        return [j for j in range(self.n_clusters) if self.adjacency[cid, j]]
+
+    def all_units_of_faction(self, fid: int) -> List[CowUnit]:
+        out = []
+        for c in self.clusters:
+            out.extend(c.units_of_faction(fid))
+        return out
+
+    def faction_total_hp(self, fid: int) -> float:
+        return sum(u.hp for u in self.all_units_of_faction(fid))
+
+    def faction_cluster_count(self, fid: int) -> int:
+        return sum(1 for c in self.clusters if c.owner_faction == fid)
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# Initialization Helpers                                                       #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+def init_world_state(
     n_clusters: int,
-    params: StandardizedUnitParams,
-    rng: np.random.Generator,
-    initial_global_supply: float = 100.0,
-    initial_reinforcement_pool: float = 50.0,
+    faction_configs: List[Dict[str, Any]],
+    adjacency: NDArray[np.bool_],
     objectives: Optional[List[Dict[str, Any]]] = None,
-    factions: Optional[List[Dict[str, Any]]] = None,
-) -> StandardizedWorldMilitaryState:
-    """
-    Initialize a standardized military state with empty clusters and optional objectives.
+    cluster_terrains: Optional[List[CowTerrain]] = None,
+    cluster_owners: Optional[List[Optional[int]]] = None,
+    cluster_buildings: Optional[List[Dict[str, int]]] = None,
+) -> CowWorldState:
+    """Build a CowWorldState from config dicts (called at reset)."""
+    reset_uid_counter(1)
 
-    This replaces the old initialize_military_state function.
-    """
-    # Create empty clusters
-    clusters = tuple(
-        StandardizedClusterMilitaryState(
-            cluster_id=i,
-            units=(),
-            supply_depot=10.0,  # Initial supply per cluster
-            is_controlled=False,
-            controlling_faction=None,
-            reinforcement_timer=0.0,
-            faction_presence={},
+    # Clusters
+    terrains = cluster_terrains or [CowTerrain.PLAINS] * n_clusters
+    owners = cluster_owners or [None] * n_clusters
+    clusters = []
+    for i in range(n_clusters):
+        bldgs: Dict[CowBuildingType, CowBuilding] = {}
+        if cluster_buildings and i < len(cluster_buildings):
+            for bname, blvl in cluster_buildings[i].items():
+                bt = CowBuildingType[bname]
+                bldgs[bt] = CowBuilding(bt, level=blvl, construction_progress=1.0)
+        clusters.append(CowClusterState(
+            cluster_id=i, terrain=terrains[i],
+            owner_faction=owners[i], buildings=bldgs,
+        ))
+
+    # Factions
+    factions: Dict[int, CowFactionState] = {}
+    for fc in faction_configs:
+        fid = fc["faction_id"]
+        res = np.array(fc.get("resources", [20, 15, 10, 10, 5]), dtype=np.float64)
+        inc = np.array(fc.get("income", [3, 2, 1.5, 1, 0.5]), dtype=np.float64)
+        factions[fid] = CowFactionState(
+            faction_id=fid,
+            name=fc["name"],
+            doctrine=CowDoctrine[fc.get("doctrine", "AXIS")],
+            resources=res, base_income=inc,
+            controlled_clusters=fc.get("controlled_clusters", []),
         )
-        for i in range(n_clusters)
+
+    # Objectives
+    objs = []
+    if objectives:
+        for od in objectives:
+            objs.append(MilitaryObjective(
+                objective_id=od["objective_id"],
+                name=od["name"],
+                objective_type=od.get("objective_type", "capture"),
+                target_cluster_id=od["target_cluster_id"],
+                required_strength=od.get("required_strength", 50.0),
+                reward_value=od.get("reward_value", 25.0),
+                faction_id=od["faction_id"],
+                hold_required=od.get("hold_required", 5),
+            ))
+
+    return CowWorldState(
+        clusters=clusters, factions=factions,
+        objectives=objs, adjacency=adjacency, step=0,
     )
 
-    # Create objectives if none provided
-    if objectives is None:
-        objectives = [
-            {
-                'objective_id': 1,
-                'name': 'Capture Central Cluster',
-                'objective_type': 'capture',
-                'target_cluster_id': 0,
-                'required_units': 3,
-                'reward_value': 25.0,
-                'faction_id': 1,
-            },
-            {
-                'objective_id': 2,
-                'name': 'Hold Supply Route',
-                'objective_type': 'hold',
-                'target_cluster_id': 1,
-                'required_units': 2,
-                'reward_value': 15.0,
-                'faction_id': 1,
-            }
-        ]
 
-    # Convert objectives to StandardizedMilitaryObjective objects
-    military_objectives = tuple(
-        StandardizedMilitaryObjective(
-            objective_id=obj['objective_id'],
-            name=obj['name'],
-            objective_type=obj['objective_type'],
-            target_cluster_id=obj['target_cluster_id'],
-            required_units=obj['required_units'],
-            reward_value=obj['reward_value'],
-            faction_id=obj.get('faction_id'),
-        )
-        for obj in objectives
-    )
+def spawn_initial_units(
+    world: CowWorldState,
+    unit_specs: Dict[int, List[Dict[str, Any]]],
+) -> CowWorldState:
+    """Spawn initial units per-cluster from YAML-style spec.
 
-    # Create factions if provided
-    factions_dict = {}
-    if factions:
-        for faction in factions:
-            factions_dict[faction['faction_id']] = {
-                'name': faction['name'],
-                **{k: v for k, v in faction.items() if k != 'faction_id'}
-            }
-
-    return StandardizedWorldMilitaryState(
-        clusters=clusters,
-        objectives=military_objectives,
-        global_supply=initial_global_supply,
-        global_reinforcement_pool=initial_reinforcement_pool,
-        step=0,
-        next_unit_id=1,
-        factions=factions_dict,
-    )
-
-# ─────────────────────────────────────────────────────────────────────────── #
-# Unit Creation Helpers                                                         #
-# ─────────────────────────────────────────────────────────────────────────── #
-
-def create_standardized_unit(
-    unit_id: int,
-    unit_type: MilitaryUnitType,
-    cluster_id: int,
-    params: StandardizedUnitParams,
-    faction_id: Optional[int] = None,
-    support_companies: Optional[List[SupportCompany]] = None,
-    objective_id: Optional[int] = None,
-) -> StandardizedMilitaryUnit:
+    unit_specs: {cluster_id: [{unit_type: "INFANTRY", count: 3,
+                                hp_frac: 0.9, faction: 1, level: 1}, ...]}
     """
-    Create a standardized military unit with proper initialization.
-    """
-    if support_companies is None:
-        support_companies = []
+    from .cow_combat import cow_type_from_legacy, _gen_uid
+    for cid, specs in unit_specs.items():
+        if cid >= len(world.clusters):
+            continue
+        cluster = world.clusters[cid]
+        for spec in specs:
+            ut_name = spec["unit_type"]
+            cow_ut = cow_type_from_legacy(ut_name) or CowUnitType.MILITIA
+            lvl = spec.get("level", 1)
+            count = spec.get("count", 1)
+            fid = spec.get("faction", 0)
+            hp_frac = spec.get("hp_frac", 1.0)
+            doctrine = world.factions[fid].doctrine if fid in world.factions else None
 
-    return StandardizedMilitaryUnit(
-        unit_id=unit_id,
-        unit_type=unit_type,
-        cluster_id=cluster_id,
-        hit_points=params.get_max_hp(unit_type),
-        combat_effectiveness=1.0,
-        supply_level=0.8,
-        experience=0.0,
-        morale=0.9,
-        objective_id=objective_id,
-        support_companies=tuple(support_companies),
-        terrain_bonus=1.0,
-        entrenchment=0.0,
-        faction_id=faction_id,
-    )
+            stats = get_unit_stats(cow_ut, lvl)
+            max_hp = stats.hitpoints
+            if doctrine:
+                max_hp *= (1.0 + get_doctrine_mod(doctrine, stats.category).hp_mod)
 
-def create_infantry_division(
-    unit_id: int,
-    cluster_id: int,
-    params: StandardizedUnitParams,
-    faction_id: Optional[int] = None,
-    objective_id: Optional[int] = None,
-) -> StandardizedMilitaryUnit:
-    """
-    Create a standardized infantry division with artillery support.
-    """
-    support_companies = [
-        SupportCompany(SupportCompanyType.ARTILLERY_COMPANY, size=1),
-        SupportCompany(SupportCompanyType.ENGINEER_COMPANY, size=1),
-    ]
-
-    return create_standardized_unit(
-        unit_id=unit_id,
-        unit_type=MilitaryUnitType.INFANTRY,
-        cluster_id=cluster_id,
-        params=params,
-        faction_id=faction_id,
-        support_companies=support_companies,
-        objective_id=objective_id,
-    )
-
-def create_armored_division(
-    unit_id: int,
-    cluster_id: int,
-    params: StandardizedUnitParams,
-    faction_id: Optional[int] = None,
-    objective_id: Optional[int] = None,
-) -> StandardizedMilitaryUnit:
-    """
-    Create a standardized armored division with support companies.
-    """
-    support_companies = [
-        SupportCompany(SupportCompanyType.MAINTENANCE_COMPANY, size=1),
-        SupportCompany(SupportCompanyType.RECON_COMPANY, size=1),
-    ]
-
-    return create_standardized_unit(
-        unit_id=unit_id,
-        unit_type=MilitaryUnitType.MEDIUM_TANK,
-        cluster_id=cluster_id,
-        params=params,
-        faction_id=faction_id,
-        support_companies=support_companies,
-        objective_id=objective_id,
-    )
+            for _ in range(count):
+                uid = _gen_uid()
+                u = CowUnit(
+                    uid=uid, stats=stats,
+                    hp=max_hp * hp_frac,
+                    faction_id=fid, cluster_id=cid,
+                )
+                cluster.units.append(u)
+    return world

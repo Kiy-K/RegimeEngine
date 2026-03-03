@@ -12,15 +12,18 @@ The engine supports both **single-agent governance** (PPO stabilization) and **m
 
 ## Key Features
 
-- **Multi-Agent Warfare**: Adversarial Axis vs. Soviet self-play with per-side observations, actions, and rewards (Battle of Stalingrad scenario).
+- **CoW-Native Military System**: Full Call of War-style combat with 34 unit types, terrain bonuses, morale dynamics, and physics integration.
+- **Physics-Driven Simulation**: Realistic terrain, weather, supply logistics, and line-of-sight modeling integrated with combat mechanics.
+- **Advanced Unit Traits**: Elite units, terrain specialization, weather adaptation, engineering capabilities, and combat specials (suppression, breakthrough, ambush).
+- **Multi-Agent Warfare**: Adversarial Axis vs. Soviet self-play with per-side observations, actions, and rewards (Battle of Moscow scenario).
 - **Plugin Architecture**: Modular, hot-pluggable simulation extensions with standardized `on_step(world, turn)` interface.
-- **Historical Scenarios**: YAML-defined scenarios (Stalingrad with 9 operational sectors, Operation Wintergewitter, Volga reinforcements).
+- **Historical Scenarios**: YAML-defined scenarios (Moscow 1941 with 9 sectors, detailed terrain, winter attrition, partisan warfare).
 - **Hierarchical Modeling**: Districts nested within provinces, with custom adjacency and diffusion rates.
 - **Reinforcement Learning**: Trained PPO/RecurrentPPO agents for regime stabilization and adversarial warfare.
 - **Economic Subsystem**: Per-cluster GDP, unemployment, debt, and industrial capacity with bidirectional military feedback.
-- **Population & Military**: Multi-class demographics, ethnic tension, conscription/desertion dynamics, and 9 political unit types.
+- **Population & Military**: Multi-class demographics, ethnic tension, conscription/desertion dynamics, and 34 military unit types.
 - **Spatial Dynamics**: Domino effects, cascade failures, and alliance diplomacy across geographical units.
-- **CLI Interface**: `python cli.py run stalingrad --episodes 30` for quick scenario execution.
+- **CLI Interface**: `python cli.py run moscow --episodes 30` for quick scenario execution.
 
 ## Architecture
 
@@ -34,6 +37,7 @@ GravitasEngine/
 │   │   ├── soviet_reinforcements.py  # Volga barge crossing mechanic
 │   │   └── axis_airlift.py      # Luftwaffe airlift mechanic
 │   └── scenarios/               # Scenario YAML files
+│       ├── moscow.yaml          # 9-sector Battle of Moscow (NEW)
 │       └── stalingrad.yaml      # 9-sector Battle of Stalingrad
 ├── gravitas_engine/             # Core simulation engine
 │   ├── core/                    # State, params, integrator
@@ -41,10 +45,21 @@ GravitasEngine/
 │   ├── systems/                 # ODE dynamics, shocks, media, economy
 │   └── analysis/                # Metrics, logging
 ├── extensions/                  # Military wrapper, political interface
+│   ├── military/                # CoW-native military system (NEW)
+│   │   ├── cow_combat.py        # 34 unit types, traits, combat resolution
+│   │   ├── military_dynamics.py # Combat, production, research, morale
+│   │   ├── military_state.py    # State dataclasses
+│   │   ├── military_wrapper.py   # Gymnasium environment
+│   │   ├── physics.py           # Physics engine (terrain, weather, supply)
+│   │   ├── physics_bridge.py    # Integration layer
+│   │   └── unit_types.py        # Legacy unit type mappings
+│   └── pop/                     # Population dynamics
 ├── configs/                     # Unified YAML configuration
-│   └── custom.yaml              # Plugin + scenario config
+│   ├── custom.yaml              # Plugin + scenario config
+│   └── moscow.yaml              # Moscow scenario with physics config
 ├── cli.py                       # CLI entry point
 ├── tests/                       # Training, evaluation, replay scripts
+│   └── train_moscow_selfplay.py # Moscow self-play training (NEW)
 └── docs/                        # Documentation
 ```
 
@@ -61,25 +76,25 @@ pip install -r requirements.txt
 ### CLI (Recommended)
 
 ```bash
-# Run Stalingrad with both plugins
-python cli.py run stalingrad --episodes 5 --plugins soviet_reinforcements axis_airlift
+# Run Moscow with physics-enabled military system
+python cli.py run moscow --episodes 5
 
 # Run from unified config
-python cli.py run --config configs/custom.yaml --episodes 30
+python cli.py run --config configs/moscow.yaml --episodes 30
 
 # List available scenarios and plugins
 python cli.py list scenarios
 python cli.py list plugins
 
 # Run with trained agents
-python cli.py run stalingrad --episodes 30 \
-    --axis-model logs/stalingrad_selfplay_volga/axis_final.zip \
-    --soviet-model logs/stalingrad_selfplay_volga/soviet_final.zip
+python cli.py run moscow --episodes 30 \
+    --axis-model logs/moscow_selfplay/axis_final.zip \
+    --soviet-model logs/moscow_selfplay/soviet_final.zip
 
 # Detailed battle replay with sector-by-sector commentary
 python cli.py replay \
-    --axis-model logs/stalingrad_selfplay_volga/axis_final.zip \
-    --soviet-model logs/stalingrad_selfplay_volga/soviet_final.zip
+    --axis-model logs/moscow_selfplay/axis_final.zip \
+    --soviet-model logs/moscow_selfplay/soviet_final.zip
 ```
 
 ### Python API
@@ -110,17 +125,17 @@ python train_ppo.py
 ### Multi-Agent Self-Play Training
 
 ```bash
-python tests/train_stalingrad_selfplay.py \
+python tests/train_moscow_selfplay.py \
     --total-rounds 6 --steps-per-round 25000 --n-envs 4 \
-    --log-dir logs/stalingrad_selfplay_volga
+    --log-dir logs/moscow_selfplay
 ```
 
 ### Battle Evaluation
 
 ```bash
-python tests/eval_stalingrad_battle.py \
-    --axis-model logs/stalingrad_selfplay_volga/axis_final.zip \
-    --soviet-model logs/stalingrad_selfplay_volga/soviet_final.zip \
+python tests/eval_moscow_battle.py \
+    --axis-model logs/moscow_selfplay/axis_final.zip \
+    --soviet-model logs/moscow_selfplay/soviet_final.zip \
     --n-episodes 30
 ```
 
@@ -178,41 +193,63 @@ plugin_configs:
     decay_rate: 0.005
 ```
 
-## Battle of Stalingrad Scenario
+## Battle of Moscow Scenario
 
-The flagship scenario simulates the decisive Eastern Front battle (Aug 1942 – Feb 1943) with **9 operational sectors**:
+The flagship scenario simulates the decisive Eastern Front battle (Oct 1941 – Jan 1942) with **9 operational sectors**, **physics-driven terrain/weather**, and **34 unit types**:
 
-| ID | Sector | Controller | Role |
-|----|--------|-----------|------|
-| 0 | Stalingrad City Center | Axis | Urban combat, extreme hazard |
-| 1 | Tractor Factory District | Axis | Industrial zone, main assault axis |
-| 2 | Mamayev Kurgan | Contested | Strategic hilltop |
-| 3 | Volga Crossing | Soviet | Lifeline for reinforcements |
-| 4 | Northern Don River Line | Axis | Defensive arc |
-| 5 | Axis Supply Corridor | Axis | Overextended logistics |
-| 6 | Soviet Strategic Reserve | Soviet | Operation Uranus buildup |
-| 7 | Romanian/Italian Sector | Axis | Weak southern flank |
-| 8 | Wintergewitter Corridor | Axis | Hoth's relief attempt |
+| ID | Sector | Controller | Terrain | Role |
+|----|--------|-----------|---------|------|
+| 0 | Moscow City Center | Soviet | urban | Soviet capital — primary strategic objective |
+| 1 | Yaroslavl Rail Hub | Soviet | forest | Logistics hub, supply distribution |
+| 2 | Tula Defense Line | Soviet | forest | Fortified defensive line, arms production |
+| 3 | Soviet Strategic Reserve | Soviet | forest | Siberian reinforcements, winter troops |
+| 4 | Bryansk Forest | Contested | forest | Partisan territory, contested zone |
+| 5 | Vyazma Rail Hub | Axis | open | Primary Axis logistics hub |
+| 6 | Smolensk Forward Base | Axis | urban | Army Group Center HQ |
+| 7 | Kalinin Northern Front | Axis | forest | 3rd Panzer Group advance |
+| 8 | Klin-Solnechnogorsk | Axis | open | Closest approach to Moscow |
+
+### Physics Integration
+
+- **Terrain Effects**: Urban (+35% defense for Guards), Forest (+15% defense), Mountains, Marsh
+- **Weather Dynamics**: Temperature curve, snow depth, visibility, equipment reliability
+- **Supply Logistics**: Rail/road capacity, fuel/ammo consumption, winter attrition
+- **Line of Sight**: Recon units, terrain masking, detection ranges
+
+### Unit Types & Traits
+
+- **Infantry**: Guards (elite, urban bonus), Ski Troops (winter hardened), Shock Troops (breakthrough)
+- **Specialists**: Engineers (fortifications, mines), Snipers (suppression), Mountain Troops (terrain bonus)
+- **Armor**: Light/Medium/Heavy tanks, Tank Destroyers, Flame Tanks (anti-structure)
+- **Support**: Artillery, Mortars, Rocket Artillery, Anti-Air, Supply Trucks
+- **Recon**: Armored Cars, Recon Infantry (detection)
 
 ### Historical Shock Events
 
-- **Operation Wintergewitter** (Turn 200+): German 4th Panzer Army relief push.
-- **Operation Little Saturn** (Turn 250+): Soviet counter-offensive cuts off relief.
-- **Panzer Spearhead**: Temporary Axis military surge.
-- **Soviet Guards Block**: Defensive counter at the relief corridor.
+- **Rail Sabotage**: Partisans disrupt Axis supply lines
+- **Fuel Shortage**: Axis vehicles freeze in extreme cold
+- **Winter Blizzard**: -40°C temperatures, equipment failures
+- **Siberian Divisions**: Fresh winter-equipped Soviet reinforcements
+- **Factory Evacuation**: Soviet production relocation
+- **German Panic Retreat**: Unauthorized Axis withdrawals
+- **Soviet Counteroffensive**: Zhukov's December 1941 push
+- **Partisan Uprising**: Coordinated Bryansk Forest operations
 
 ### Training Results (Self-Play)
 
-| Phase | Axis σ̄ | Soviet σ̄ | Soviet Win % |
-|-------|--------|----------|-------------|
-| Base (8 clusters) | 0.670 | 0.953 | 100% |
-| + Wintergewitter (9 clusters) | 0.980 | 0.949 | 3% |
-| + Volga Reinforcements | 0.853 | 0.911 | **60%** |
+| Phase | Features | Balance |
+|-------|----------|---------|
+| Base | 34 unit types, terrain | Soviet defensive advantage |
+| + Physics | Weather, supply, attrition | Winter favors Soviets |
+| + Traits | Elite units, specialists | Dynamic tactical depth |
 
 ## Documentation
 
+- [Moscow Scenario](docs/MOSCOW_SCENARIO.md) — Full scenario documentation with physics integration.
+- [Military System Guide](docs/MILITARY_SYSTEM.md) — CoW-native combat, unit types, and traits.
+- [Physics Integration](docs/PHYSICS_INTEGRATION.md) — Terrain, weather, and supply modeling.
 - [Plugin System Guide](docs/PLUGIN_SYSTEM.md) — Writing and configuring plugins.
-- [Stalingrad Scenario](docs/STALINGRAD_SCENARIO.md) — Full scenario documentation.
+- [Stalingrad Scenario](docs/STALINGRAD_SCENARIO.md) — Legacy scenario documentation.
 - [Architecture Overview](docs/ARCHITECTURE.md) — Engine internals and design.
 
 ## Population + Military Modeling

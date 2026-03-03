@@ -7,129 +7,237 @@ counteroffensive of World War II. Operation Typhoon — the German drive on Mosc
 stalled in the face of Soviet defensive lines, partisan warfare behind German lines,
 and the devastating Russian winter that crippled Axis logistics.
 
-This scenario models the battle with **9 sectors**, **nonlinear combat dynamics**,
-a **graph-based logistics network**, and **autonomous partisan warfare** — creating
-a simulation that is hard for RL agents to exploit through simple linear strategies.
+This scenario models the battle with **9 sectors**, **34 unit types**, **physics-driven terrain/weather**, and **advanced unit traits** — creating a realistic simulation that challenges RL agents with complex tactical decisions.
+
+## Key Features
+
+- **CoW-Native Combat**: Full Call of War-style combat with terrain bonuses, morale dynamics, and production systems
+- **Physics Integration**: Realistic terrain effects, weather attrition, supply logistics, and line-of-sight modeling
+- **Unit Traits System**: Elite units, terrain specialization, weather adaptation, engineering capabilities, combat specials
+- **Historical Accuracy**: Detailed unit compositions, winter effects, and partisan operations based on historical records
+- **Dynamic Weather**: Temperature curves, snow accumulation, visibility effects on equipment and movement
 
 ## Sectors
 
 | ID | Name | Side | Terrain | Description |
 |----|------|------|---------|-------------|
 | 0 | Moscow City Center | Soviet | urban | Soviet capital — primary strategic objective |
-| 1 | Moscow Defense Ring | Soviet | urban | Fortified defensive perimeter |
-| 2 | Mozhaisk Line | Soviet | forest | Western defense line, partisan territory |
-| 3 | Tula Industrial Zone | Soviet | urban | Critical arms production center |
-| 4 | Vyazma Salient | Contested | open | Key contested crossroads |
-| 5 | Kalinin Front | Axis | forest | Northern Axis approach |
-| 6 | Guderian Southern Axis | Axis | open | Guderian's 2nd Panzer drive on Tula |
-| 7 | Smolensk Supply Hub | Axis | open | Primary Axis logistics hub |
-| 8 | Rzhev Salient | Axis | forest | Fortified Axis salient |
+| 1 | Yaroslavl Rail Hub | Soviet | forest | Logistics hub, supply distribution |
+| 2 | Tula Defense Line | Soviet | forest | Fortified defensive line, arms production |
+| 3 | Soviet Strategic Reserve | Soviet | forest | Siberian reinforcements, winter troops |
+| 4 | Bryansk Forest | Contested | forest | Partisan territory, contested zone |
+| 5 | Vyazma Rail Hub | Axis | open | Primary Axis logistics hub |
+| 6 | Smolensk Forward Base | Axis | urban | Army Group Center HQ |
+| 7 | Kalinin Northern Front | Axis | forest | 3rd Panzer Group advance |
+| 8 | Klin-Solnechnogorsk | Axis | open | Closest approach to Moscow |
 
-## Plugins
+## Military System
 
-### 1. Nonlinear Combat (`nonlinear_combat`)
+### CoW-Native Combat Engine
 
-Replaces linear combat with smooth nonlinear functions that resist exploitation:
+The scenario uses a full Call of War-style combat system with realistic physics integration:
 
-- **Lanchester Square Law**: Attrition scales with `m²` — concentrating forces gives
-  superlinear advantage, but also superlinear losses
-- **Diminishing Returns**: Military effectiveness = `m^α` where α=0.7 (sublinear stacking)
-- **Breakthrough Sigmoid**: Breakthrough damage only occurs when force ratio exceeds
-  threshold (σ=0.58), with smooth sigmoid transition — no sharp threshold to exploit
-- **Combat Fatigue**: Prolonged combat (>120 turns) causes exponentially increasing
-  attrition via logistic sigmoid
-- **Terrain Multipliers**: Forest (×1.3 defense), urban (×1.5 defense), open (×1.0)
-- **Fog of War**: Gaussian noise on damage calculations prevents perfect prediction
+#### Core Combat Mechanics
 
-### 2. Logistics Network (`logistics_network`)
+- **Lanchester Square Law**: Attrition scales with force concentration squared
+- **Terrain Bonuses**: Urban (+35% for Guards), Forest (+15% defense), Mountains, Marsh
+- **Morale Dynamics**: Unit losses affect faction morale based on unit traits
+- **Fatigue & Attrition**: Prolonged combat causes exponentially increasing losses
+- **Experience System**: Units gain XP from combat, elite units learn 50% faster
 
-Graph-based supply system with nonlinear flow dynamics:
+#### Unit Production & Economy
 
-- **Sigmoid-Gated Production**: Sectors only produce when stability σ > 0.4 (smooth gate)
-- **Quadratic Consumption**: Supply burn rate = `base × m × (1 + h²)` — combat zones
-  consume supplies quadratically faster
-- **Saturating Flow**: Resource transfer along links follows logistic curve that caps
-  at link capacity — prevents infinite funneling
-- **Exponential Distance Decay**: `exp(-0.3 × hops)` — distant sectors get less supply
-- **Winter Penalties**: Axis consumption +35% in winter (turns 150–400), Soviet +10%
-- **Sabotage Cascades**: Vulnerable links can be disrupted, cutting downstream supply
-- **Congestion**: Multiple flows through same hub get diminishing returns
-- **Resource Deprivation**: Sectors below 15% resources suffer military/stability decay
+- **Dynamic Production**: Sectors produce units based on income and buildings
+- **Nonlinear Costs**: Higher-tier units have exponential cost scaling
+- **Building System**: Barracks, Bunkers, Supply Depots affect production
+- **Resource Management**: Fuel, ammo, and supply consumption affect combat effectiveness
 
-### 3. Partisan Warfare (`partisan_warfare`)
+## Physics Integration
 
-Autonomous asymmetric force operating behind Axis lines:
+### Terrain System
 
-- **Recruitment**: New partisans spawn in contested/forest sectors every 25 turns,
-  costing Soviet resources. Strength scales with local trust
-- **Sabotage**: Target Axis high-value sectors — damage resources, boost hazard.
-  Success probability = 60% + 30% × experience
-- **Ambush**: Hit-and-run attacks on Axis military. Forest terrain gives 30% bonus.
-  Counter-damage from garrison
-- **Propaganda**: Boost Soviet trust and polarization in contested zones
-- **Detection**: Axis military can detect partisans (12% base × local military).
-  Forest/urban terrain reduces detection. Detected partisans lose 30% strength
-- **Movement**: Hit-and-run doctrine — partisans relocate after actions, preferring
-  forest sectors
-- **Morale Decay**: Partisans slowly lose morale; recovery near Soviet sectors
+- **Realistic Terrain Types**: Urban, Forest, Open, Hills, Mountains, Marsh, Desert
+- **Elevation Effects**: Higher elevation provides defensive bonuses
+- **Cover Factors**: Terrain affects unit concealment and detection
+- **Fortification**: Engineers can build fortifications that provide defensive bonuses
 
-Partisans are **not controlled by either RL agent** — they create irreducible
-uncertainty that both sides must adapt to.
+### Weather Dynamics
+
+- **Temperature Curves**: Historical temperature progression from October to January
+- **Snow Accumulation**: Gradual snow buildup affects movement and equipment
+- **Visibility Effects**: Weather impacts detection ranges and combat effectiveness
+- **Equipment Reliability**: Cold weather causes equipment failures without winterization
+
+### Supply Logistics
+
+- **Rail & Road Networks**: Different capacities for supply distribution
+- **Fuel & Ammo Consumption**: Units consume resources based on activity and weather
+- **Winter Attrition**: Non-winterized units suffer increased losses in extreme cold
+- **Supply Depots**: Strategic hubs for resource distribution and resupply
+
+### Line of Sight & Detection
+
+- **Recon Units**: Specialized units with extended detection ranges
+- **Terrain Masking**: Hills and forests block line of sight
+- **Night Effects**: Reduced visibility at night affects detection and combat
+- **Ambush Mechanics**: Units can ambush from concealed positions
 
 ## Running the Scenario
 
 ```bash
-# Basic run with all plugins
-python cli.py run moscow --episodes 5 \
-  --plugins nonlinear_combat logistics_network partisan_warfare
+# Basic run with physics-enabled military system
+python cli.py run moscow --episodes 5
 
 # Using the unified config
 python cli.py run --config configs/moscow.yaml --episodes 10
 
 # With trained agents
 python cli.py run moscow --episodes 30 \
-  --plugins nonlinear_combat logistics_network partisan_warfare \
-  --axis-model logs/moscow/axis_final.zip \
-  --soviet-model logs/moscow/soviet_final.zip
+  --axis-model logs/moscow_selfplay/axis_final.zip \
+  --soviet-model logs/moscow_selfplay/soviet_final.zip
+
+# Self-play training
+python tests/train_moscow_selfplay.py \
+  --total-rounds 6 --steps-per-round 25000 --n-envs 4 \
+  --log-dir logs/moscow_selfplay
 ```
+
+## Unit Types & Traits
+
+The scenario features **34 distinct unit types** with specialized traits and capabilities:
+
+### Infantry Units
+
+| Unit Type | Traits | Special Abilities |
+|-----------|--------|------------------|
+| **Guards Infantry** | Elite, Urban +35%, Forest +15% | High morale impact, defensive bonus |
+| **Ski Troops** | Winter hardened | No movement penalty in snow |
+| **Shock Troops** | Elite, Breakthrough 25%, Suppression 20% | Fortification reduction, post-combat damage |
+| **Mountain Troops** | Elite, Mountain bonus | Superior performance in hills |
+| **Engineer** | Fortification building, Mine clearing/laying | Can construct defenses, clear obstacles |
+| **Sniper Team** | Elite, Suppression 15%, Recon 2 | Long-range suppression, detection |
+| **Recon Infantry** | Recon 2 | Extended detection range |
+
+### Armor Units
+
+| Unit Type | Traits | Special Abilities |
+|-----------|--------|------------------|
+| **Light Tank** | Recon 1, Breakthrough 10% | Fast scouting, limited breakthrough |
+| **Medium Tank** | Breakthrough 15% | Main battle tank, balanced |
+| **Heavy Tank** | Elite, Breakthrough 25%, Suppression 10% | Powerful but expensive |
+| **Tank Destroyer** | Anti-armor specialization | High damage vs armor |
+| **Assault Gun** | Suppression 10% | Direct fire support |
+| **Flame Tank** | Breakthrough 30%, Suppression 30% | Anti-structure, area denial |
+
+### Support Units
+
+| Unit Type | Traits | Special Abilities |
+|-----------|--------|------------------|
+| **Artillery** | Suppression 25% | Long-range fire support |
+| **Mortar** | Suppression 15% | Indirect fire, mobile |
+| **Rocket Artillery** | Suppression 35% | Area saturation |
+| **Anti-Air** | Air defense | Protects from air attacks |
+| **Anti-Tank** | Anti-armor specialization | Defensive AT role |
+
+### Logistics & Recon
+
+| Unit Type | Traits | Special Abilities |
+|-----------|--------|------------------|
+| **Supply Truck** | Resupply capability | Can replenish other units |
+| **Armored Car** | Recon 2 | Fast reconnaissance |
+
+### Air Units
+
+| Unit Type | Traits | Special Abilities |
+|-----------|--------|------------------|
+| **Interceptor** | Recon 3, Night fighter | Air superiority |
+| **Tactical Bomber** | Suppression 20% | Ground attack |
+| **Attack Bomber** | Anti-structure | Precision strikes |
+| **Strategic Bomber** | Suppression 25% | Strategic bombing |
 
 ## Configuration
 
-All plugin parameters are tunable via `configs/moscow.yaml`. Key parameters:
+Physics and military parameters are configurable via `gravitas/scenarios/moscow.yaml`:
 
-| Parameter | Plugin | Default | Effect |
-|-----------|--------|---------|--------|
-| `diminishing_returns_alpha` | combat | 0.7 | Force stacking sublinearity |
-| `breakthrough_threshold` | combat | 0.58 | Min force ratio for breakthrough |
-| `fatigue_midpoint` | combat | 120 | Combat turns before fatigue kicks in |
-| `winter_axis_penalty` | logistics | 0.35 | Axis winter consumption multiplier |
-| `distance_decay_rate` | logistics | 0.3 | Supply decay per network hop |
-| `max_partisans` | partisan | 6 | Maximum active partisan units |
-| `ambush_military_damage` | partisan | 0.06 | Damage per successful ambush |
+### Physics Configuration
+
+```yaml
+map_physics:
+  climate:
+    temperature_curve: {0: 5.0, 50: -10.0, 100: -20.0, 150: -30.0}
+    humidity: 70
+    wind_ms: 5.0
+  sectors:
+    0: # Moscow
+      terrain: URBAN
+      elevation_m: 156
+      cover: 0.7
+      fortification: 0.4
+```
+
+### Military Configuration
+
+```yaml
+cow_military:
+  axis_income: [4.0, 3.5, 2.5, 2.0, 1.0]
+  soviet_income: [3.5, 4.0, 2.5, 1.5, 1.5]
+  objectives:
+    - {objective_id: 0, name: "Capture Moscow", target_cluster_id: 0}
+```
 
 ## Design Philosophy
 
-The Moscow scenario is designed to be **harder for RL agents to exploit** than
-linear combat models:
+The Moscow scenario is designed to be **realistic and challenging** for RL agents:
 
-1. **Nonlinearity**: All key functions (production, combat, flow) use smooth
-   nonlinear curves (sigmoids, power laws, exponential decay) — no sharp thresholds
-   to game
-2. **Stochasticity**: Fog of war, partisan actions, and sabotage events add
-   irreducible randomness
-3. **Coupled Systems**: Combat affects logistics (hazard → consumption), logistics
-   affect combat (resource deprivation → military decay), partisans affect both
-4. **Asymmetry**: Winter favors Soviets, partisans are Soviet-aligned, but Axis
-   has stronger initial military — mirrors historical asymmetry
-5. **Bounded Returns**: Diminishing returns on force concentration, saturating
-   supply flow, and congestion all prevent degenerate strategies
+1. **Physics Integration**: Terrain, weather, and supply logistics create realistic constraints
+2. **Unit Specialization**: 34 distinct unit types with traits encourage tactical diversity
+3. **Seasonal Dynamics**: Winter attrition and equipment failures create temporal challenges
+4. **Asymmetric Balance**: Soviet defensive advantages vs. Axis offensive capabilities
+5. **Moral Factors**: Elite units and morale effects add psychological depth
+6. **Supply Dependencies**: Logistics network creates vulnerability and strategic depth
+
+## Historical Shock Events
+
+The scenario includes historically accurate events that occur during the battle:
+
+- **Rail Sabotage** (Turn 50+): Partisans disrupt Axis supply lines
+- **First Snow** (Turn 100): Initial winter weather, equipment reliability drops
+- **Fuel Shortage** (Turn 150): Axis vehicles freeze without winterization
+- **Winter Blizzard** (Turn 200): -40°C temperatures, massive attrition
+- **Siberian Reinforcements** (Turn 220): Fresh winter-equipped Soviet divisions arrive
+- **Factory Evacuation** (Turn 250): Soviet production capacity temporarily reduced
+- **German Panic Retreat** (Turn 280): Unauthorized Axis withdrawals from forward positions
+- **Soviet Counteroffensive** (Turn 300): Zhukov's coordinated December 1941 push
+- **Partisan Uprising** (Turn 320): Coordinated Bryansk Forest operations
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `gravitas/scenarios/moscow.yaml` | Scenario definition (sectors, agents, shocks, terrain, logistics) |
-| `gravitas/plugins/nonlinear_combat.py` | Lanchester combat, fatigue, breakthrough, terrain |
-| `gravitas/plugins/logistics_network.py` | Supply graph, production, flow, sabotage |
-| `gravitas/plugins/partisan_warfare.py` | Autonomous partisan units |
-| `configs/moscow.yaml` | Unified config with all plugin parameters |
+| `gravitas/scenarios/moscow.yaml` | Scenario definition with physics config |
+| `extensions/military/cow_combat.py` | 34 unit types, traits, combat resolution |
+| `extensions/military/military_dynamics.py` | Combat, production, morale dynamics |
+| `extensions/military/physics.py` | Terrain, weather, supply physics engine |
+| `extensions/military/physics_bridge.py` | Integration layer between CoW and physics |
+| `tests/train_moscow_selfplay.py` | Self-play training script |
+| `configs/moscow.yaml` | Unified configuration file |
+
+## Quick Reference
+
+### Action Space
+- **MultiDiscrete([9, 9, 9, 34, 5])**: Source cluster, target cluster, unit type, building type, special action
+
+### Observation Space
+- **(507,)**: Full world state including physics observations
+
+### Victory Conditions
+- **Axis**: Capture Moscow (Sector 0) with 30+ strength
+- **Soviet**: Hold Moscow for 50+ turns, defend Tula line
+
+### Training Curriculum
+1. **Phase 1**: Operation Typhoon (Axis learns advance)
+2. **Phase 2**: Mozhaisk Defense (Soviet learns fortification)
+3. **Phase 3**: General Winter (Both sides learn winter tactics)
+4. **Phase 4**: Partisan Escalation (Contested territory focus)
+5. **Phase 5**: Zhukov Counterattack (Soviet reinforcement wave)
+6. **Phase 6**: Full Self-Play (Complete dynamics)

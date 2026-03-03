@@ -1,26 +1,18 @@
 """
-military_wrapper.py — Gymnasium wrapper integrating military extension with GravitasEnv.
+military_wrapper.py — Gymnasium wrapper for the CoW-native military system.
 
-This wrapper adds tactical military operations to GravitasEngine while maintaining
-compatibility with the existing military presence system.
+Exposes a MultiDiscrete action space:
+  [action_type, source_cluster, target_cluster, unit_type_idx, aux_idx]
 
-Key features:
-  - Extends observation space with military unit information
-  - Adds military-specific actions
-  - Integrates military rewards with base rewards
-  - Maintains compatibility with existing military dynamics
-  - Provides victory condition tracking
+Observation is a flat float32 vector produced by world_to_obs_array.
 
-The military extension works alongside the existing military system:
-  - Units contribute to cluster military presence values
-  - Unit movement affects cluster stability
-  - Unit supply consumption affects cluster resources
-  - Military objectives provide additional victory conditions
+Supports two-faction self-play: the wrapper manages a *single* faction's
+perspective; pair two wrappers (or alternate turns) for self-play training.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -29,615 +21,374 @@ try:
     import gymnasium as gym
     from gymnasium import spaces
 except ImportError:
-    import sys, os
-    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))))
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-    import gymnasium_shim as gym
-    from gymnasium_shim import spaces
+    import gymnasium_shim as gym  # type: ignore
+    from gymnasium_shim import spaces  # type: ignore
 
+from .cow_combat import (
+    CowTerrain, CowDoctrine, CowBuildingType, CowUnitType,
+)
 from .military_state import (
-    StandardizedUnitParams as MilitaryUnitParams,
-    StandardizedMilitaryUnit as MilitaryUnit,
-    StandardizedClusterMilitaryState as ClusterMilitaryState,
-    StandardizedWorldMilitaryState as WorldMilitaryState,
-    StandardizedMilitaryObjective as MilitaryObjective,
-    initialize_standardized_military_state as initialize_military_state
+    CowWorldState, CowClusterState, CowFactionState,
+    CowExternalModifiers, merge_modifiers,
+    init_world_state, spawn_initial_units,
 )
-from .unit_types import MilitaryUnitType
 from .military_dynamics import (
-    step_military_units, apply_military_action,
-    compute_military_reward, check_victory_conditions
+    step_world, check_victory, world_to_obs_array, obs_size,
+    ActionType, N_ACTION_TYPES, N_UNIT_TYPES, N_BUILDING_TYPES,
 )
-from .political_interface import (
-    compute_military_political_feedback,
-    apply_political_military_feedback,
+from .physics_bridge import (
+    init_physics_for_world, MapPhysicsConfig, load_map_physics,
 )
-# build_adjacency_matrix removed (unused and caused slow imports)
+
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# Military Action Space                                                          #
+# Wrapper                                                                      #
 # ─────────────────────────────────────────────────────────────────────────── #
 
-class MilitaryActionSpace:
+class MilitaryWrapper(gym.Env):
+    """Gymnasium env wrapping the CoW military system for a single faction.
+
+    For self-play: instantiate two MilitaryWrapper instances sharing the same
+    CowWorldState, one per faction.  Alternatively, use the ``opponent_policy``
+    callback so the wrapper automatically steps the opponent.
     """
-    Custom action space for military operations.
 
-    Supports both discrete and hierarchical action formats.
-    """
-
-    def __init__(self, max_clusters: int = 12):
-        self.max_clusters = max_clusters
-        self.unit_types = list(MilitaryUnitType)
-        self.action_types = ["deploy", "move", "attack", "reinforce", "retreat"]
-
-    def sample(self) -> Dict[str, Any]:
-        """Sample a random military action."""
-        return {
-            'action_type': np.random.choice(self.action_types),
-            'target_cluster': np.random.randint(0, self.max_clusters),
-            'unit_type': np.random.choice(self.unit_types).name,
-            'intensity': np.random.uniform(0.1, 1.0)
-        }
-
-    def contains(self, action: Any) -> bool:
-        """Check if action is valid."""
-        if not isinstance(action, dict):
-            return False
-
-        required_keys = {'action_type', 'target_cluster', 'unit_type', 'intensity'}
-        if not required_keys.issubset(action.keys()):
-            return False
-
-        if action['action_type'] not in self.action_types:
-            return False
-
-        if not (0 <= action['target_cluster'] < self.max_clusters):
-            return False
-
-        if action['unit_type'] not in [ut.name for ut in self.unit_types]:
-            return False
-
-        if not (0.0 <= action['intensity'] <= 1.0):
-            return False
-
-        return True
-
-# ─────────────────────────────────────────────────────────────────────────── #
-# Military Wrapper                                                              #
-# ─────────────────────────────────────────────────────────────────────────── #
-
-class MilitaryWrapper(gym.Wrapper):
-    """
-    Wraps GravitasEnv with tactical military operations.
-
-    The military wrapper adds:
-      1. Unit-based military operations (separate from cluster military presence)
-      2. Tactical movement between clusters
-      3. Combat resolution
-      4. Supply and logistics management
-      5. Military objectives and victory conditions
-      6. Military-specific rewards
-
-    Args:
-        env: A GravitasEnv instance
-        military_params: MilitaryUnitParams config
-        seed: RNG seed for military initialization
-        objectives: List of military objectives, or None for defaults
-    """
+    metadata = {"render_modes": ["human", "ansi"]}
 
     def __init__(
         self,
-        env: gym.Env,
-        military_params: Optional[MilitaryUnitParams] = None,
+        scenario_cfg: Dict[str, Any],
+        faction_id: int = 0,
+        opponent_faction_id: int = 1,
+        opponent_policy: Optional[Any] = None,
+        max_steps: int = 200,
+        max_clusters: int = 12,
+        render_mode: Optional[str] = None,
         seed: Optional[int] = None,
-        objectives: Optional[List[Dict[str, Any]]] = None,
-    ) -> None:
-        super().__init__(env)
-        self.military_params = military_params or MilitaryUnitParams.default()
+    ):
+        super().__init__()
+        self.scenario_cfg = scenario_cfg
+        self.faction_id = faction_id
+        self.opponent_id = opponent_faction_id
+        self.opponent_policy = opponent_policy
+        self.max_steps = max_steps
+        self.max_clusters = max_clusters
+        self.render_mode = render_mode
+
         self._rng = np.random.default_rng(seed)
-        self._objectives = objectives  # store for use in reset()
 
-        # Military state — set in reset()
-        self._military_state: Optional[WorldMilitaryState] = None
-        self._last_metrics: Optional[Dict[str, Any]] = None
-        self._adjacency_matrix: Optional[NDArray[np.bool_]] = None
+        # Determine n_clusters from config
+        self.n_clusters = scenario_cfg.get("n_clusters", 6)
+        n_c = min(self.n_clusters, self.max_clusters)
 
-        # Cache max_N from the wrapped env
-        self._max_N = getattr(env, "_max_N", 12)
+        # Action space: MultiDiscrete
+        #   [action_type, source_cluster, target_cluster, unit_type_idx, aux_idx]
+        # aux_idx encodes: building type for BUILD, level for PRODUCE/RESEARCH
+        self.aux_size = max(N_BUILDING_TYPES, 5)  # covers building types and unit levels 1-4
+        self.action_space = spaces.MultiDiscrete([
+            N_ACTION_TYPES,    # 0: action type
+            n_c,               # 1: source cluster
+            n_c,               # 2: target cluster
+            N_UNIT_TYPES,      # 3: unit type index
+            self.aux_size,     # 4: auxiliary (building type / level)
+        ])
 
-        # Military action space
-        self._military_action_space = MilitaryActionSpace(self._max_N)
+        # Physics enabled flag
+        self._physics_enabled = scenario_cfg.get("physics_enabled", False)
 
-        # Extend observation space
-        base_shape = self.env.observation_space.shape[0]
-
-        # Military observation dimensions:
-        # - Per cluster: unit_count, total_combat_power, supply_level (3 * max_N)
-        # - Global: global_supply, reinforcement_pool, objectives_progress (3)
-        # - Victory status: completion_percentage, victory_achieved (2)
-        military_obs_dim = 3 * self._max_N + 5
-
+        # Observation space
+        self._obs_dim = obs_size(self.max_clusters, physics_enabled=self._physics_enabled)
         self.observation_space = spaces.Box(
-            low=np.concatenate([
-                self.env.observation_space.low,
-                np.full(military_obs_dim, -np.inf, dtype=np.float32),
-            ]),
-            high=np.concatenate([
-                self.env.observation_space.high,
-                np.full(military_obs_dim, np.inf, dtype=np.float32),
-            ]),
+            low=-1.0, high=5.0,
+            shape=(self._obs_dim,),
             dtype=np.float32,
         )
 
-        # Create combined action space (original + military)
-        self.action_space = spaces.Dict({
-            'base_action': self.env.action_space,
-            'military_action': spaces.Dict({
-                'action_type': spaces.Discrete(len(self._military_action_space.action_types)),
-                'target_cluster': spaces.Discrete(self._max_N),
-                'unit_type': spaces.Discrete(len(self._military_action_space.unit_types)),
-                'intensity': spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
-            })
-        })
+        self.world: Optional[CowWorldState] = None
+        self._step_count = 0
 
-    # ── Gymnasium API ──────────────────────────────────────────────────────── #
+    # ── Reset ─────────────────────────────────────────────────────────────
 
     def reset(
         self,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
-        """Reset the environment and initialize military state."""
-        obs, info = self.env.reset(seed=seed, options=options)
         if seed is not None:
-            self._rng = np.random.default_rng(seed + 2000)
+            self._rng = np.random.default_rng(seed)
 
-        # Initialize military state from the freshly reset world
-        world = self._get_world()
-        N = world.n_clusters if world else self._max_N
+        cfg = self.scenario_cfg
 
-        # Use world's actual topology adjacency (boolean)
-        if world is not None:
-            self._adjacency_matrix = world.adjacency > 0.0
+        # Build adjacency
+        adj_raw = cfg.get("adjacency")
+        if adj_raw is not None:
+            adj = np.array(adj_raw, dtype=bool)
         else:
-            self._adjacency_matrix = compute_adjacency_matrix(N, rng=self._rng)
+            n = self.n_clusters
+            adj = np.eye(n, dtype=bool)
+            for i in range(n - 1):
+                adj[i, i + 1] = adj[i + 1, i] = True
 
-        # Initialize military state
-        self._military_state = initialize_military_state(
-            n_clusters=N,
-            params=self.military_params,
-            rng=self._rng,
-            objectives=self._objectives,
+        # Terrains
+        terrain_names = cfg.get("cluster_terrains")
+        terrains = None
+        if terrain_names:
+            terrains = [CowTerrain[t] for t in terrain_names]
+
+        # Owners
+        owners = cfg.get("cluster_owners")
+
+        # Buildings
+        buildings = cfg.get("cluster_buildings")
+
+        self.world = init_world_state(
+            n_clusters=self.n_clusters,
+            faction_configs=cfg["factions"],
+            adjacency=adj,
+            objectives=cfg.get("objectives"),
+            cluster_terrains=terrains,
+            cluster_owners=owners,
+            cluster_buildings=buildings,
         )
 
-        # Add initial units to some clusters
-        initial_units = self._initialize_starting_units(N)
-        if initial_units:
-            new_clusters = list(self._military_state.clusters)
-            for unit in initial_units:
-                cluster_idx = unit.cluster_id
-                new_cluster = new_clusters[cluster_idx].add_unit(unit)
-                new_clusters[cluster_idx] = new_cluster
+        # Apply external modifiers from spirit / government if configured
+        self._apply_external_modifiers(cfg)
 
-            self._military_state = self._military_state.copy_with(
-                clusters=tuple(new_clusters),
-                next_unit_id=len(initial_units) + 1
-            )
+        # Initialize physics engine if enabled
+        if self._physics_enabled:
+            self._init_physics(cfg)
 
-        extended_obs = self._extend_obs(obs)
-        info["military"] = self._military_info()
+        # Spawn initial units
+        unit_specs = cfg.get("initial_units")
+        if unit_specs:
+            # Convert string keys to int keys if needed
+            specs = {}
+            for k, v in unit_specs.items():
+                specs[int(k)] = v
+            self.world = spawn_initial_units(self.world, specs)
 
-        return extended_obs, info
+        self._step_count = 0
+
+        obs = world_to_obs_array(self.world, self.faction_id, self.max_clusters)
+        info = {"step": 0, "victory": check_victory(self.world)}
+        return obs, info
+
+    # ── Step ──────────────────────────────────────────────────────────────
 
     def step(
-        self,
-        action: Any,
+        self, action: NDArray[np.int64],
     ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
-        """Execute one step with military operations."""
-        # Extract base and military actions
-        if isinstance(action, dict) and 'base_action' in action and 'military_action' in action:
-            base_action = action['base_action']
-            military_action = self._decode_military_action(action['military_action'])
-        else:
-            # Fallback: treat as base action only, no military action
-            base_action = action
-            military_action = None
+        assert self.world is not None, "Call reset() first"
 
-        # 1. Core env step
-        obs, reward, terminated, truncated, info = self.env.step(base_action)
+        # Decode action
+        at = int(action[0])
+        src = int(action[1])
+        tgt = int(action[2])
+        ut_idx = int(action[3])
+        aux = int(action[4])
 
-        # 2. Military ↔ politics pipeline
-        military_reward = 0.0
-        if self._military_state is not None and self._adjacency_matrix is not None:
-            world = self._get_world()
-            if world is not None:
-                N  = world.n_clusters
-                dt = getattr(getattr(self.env, "params", None), "dt", 0.1)
+        # Build faction_actions dict
+        faction_actions: Dict[int, Tuple[int, int, int, int, int]] = {
+            self.faction_id: (at, src, tgt, ut_idx, aux),
+        }
 
-                # 2a. Politics → Military: adjust morale/supply/depot from cluster state
-                pol_driven_mil = apply_political_military_feedback(
-                    self._military_state,
-                    world,
-                    world.alliance,
-                    N,
-                    dt,
-                    self._rng,
-                )
+        # Opponent action
+        if self.opponent_id in self.world.factions:
+            opp_action = self._get_opponent_action()
+            faction_actions[self.opponent_id] = opp_action
 
-                # 2b. Military step (actions, movement, combat, objectives)
-                prev_mil = pol_driven_mil.copy_with()
-                new_military_state, metrics = step_military_units(
-                    military_state=pol_driven_mil,
-                    world_state=world,
-                    adjacency_matrix=self._adjacency_matrix,
-                    params=self.military_params,
-                    rng=self._rng,
-                    military_action=military_action,
-                )
-                self._last_metrics = metrics
+        # Step world
+        self.world, rewards, metrics = step_world(self.world, faction_actions, self._rng)
+        self._step_count += 1
 
-                # 2c. Military → Politics: compute per-cluster political deltas
-                deltas = compute_military_political_feedback(
-                    new_military_state,
-                    world,
-                    prev_mil,
-                    world.adjacency,
-                    world.alliance,
-                    N,
-                    dt,
-                )
+        # Reward for our faction
+        reward = float(rewards.get(self.faction_id, 0.0))
 
-                # 2d. Write political deltas back into GravitasWorld clusters
-                clusters = list(world.clusters)
-                for i in range(N):
-                    c = clusters[i]
-                    clusters[i] = c.copy_with(
-                        sigma=float(np.clip(
-                            c.sigma    + deltas["delta_sigma"][i],   0.0, 1.0)),
-                        hazard=float(np.clip(
-                            c.hazard   + deltas["delta_hazard"][i],  0.0, 5.0)),
-                        resource=float(np.clip(
-                            c.resource + deltas["delta_resource"][i],0.0, 1.0)),
-                        trust=float(np.clip(
-                            c.trust + deltas["delta_trust"][i], 0.0, 1.0)),
-                        polar=float(np.clip(
-                            c.polar + deltas["delta_polar"][i], 0.0, 1.0)),
+        # Check termination
+        victory = check_victory(self.world)
+        terminated = bool(victory["done"])
+        truncated = self._step_count >= self.max_steps
+
+        # Terminal reward shaping
+        if terminated:
+            if victory["winner"] == self.faction_id:
+                reward += 20.0
+            elif victory["winner"] is not None:
+                reward -= 20.0
+
+        obs = world_to_obs_array(self.world, self.faction_id, self.max_clusters)
+        info = {
+            "step": self._step_count,
+            "metrics": metrics,
+            "victory": victory,
+        }
+
+        return obs, reward, terminated, truncated, info
+
+    # ── External Modifiers ──────────────────────────────────────────────
+
+    def _apply_external_modifiers(self, cfg: Dict[str, Any]) -> None:
+        """Load national spirit and government modifiers and apply to factions."""
+        faction_modifiers = cfg.get("faction_modifiers", {})
+
+        for fid, faction in self.world.factions.items():
+            fmod = faction_modifiers.get(fid, faction_modifiers.get(str(fid), {}))
+            if not fmod:
+                continue
+
+            mods = CowExternalModifiers()
+
+            # Load national spirit modifiers
+            spirit_cfg = fmod.get("national_spirit")
+            if spirit_cfg:
+                try:
+                    from gravitas_engine.systems.national_spirit import (
+                        load_spirit_from_yaml, spirit_to_cow_modifiers,
                     )
+                    spirit = load_spirit_from_yaml(spirit_cfg)
+                    spirit_mods = spirit_to_cow_modifiers(spirit)
+                    mods = merge_modifiers(mods, spirit_mods)
+                except Exception:
+                    pass  # graceful fallback if spirit system unavailable
 
-                new_world = world.copy_with_clusters(clusters)
-
-                # media_bias is on GravitasWorld directly, not on clusters
-                if hasattr(world, "media_bias") and world.media_bias is not None:
-                    bias = world.media_bias.copy()
-                    bias[:N] = np.clip(
-                        bias[:N] + deltas["delta_media_bias"][:N], -1.0, 1.0
+            # Load government modifiers
+            gov_cfg = fmod.get("government_type")
+            if gov_cfg:
+                try:
+                    from gravitas_engine.systems.government import (
+                        GovernmentType, government_to_cow_modifiers,
                     )
-                    new_world = new_world.copy_with_bias(bias)
+                    gov_type = GovernmentType[gov_cfg]
+                    gov_mods = government_to_cow_modifiers(gov_type)
+                    mods = merge_modifiers(mods, gov_mods)
+                except Exception:
+                    pass  # graceful fallback if government system unavailable
 
-                # population delta (population field on GravitasWorld)
-                if (hasattr(world, "population") and world.population is not None
-                        and np.any(deltas["delta_population"] != 0)):
-                    pop = world.population.copy()
-                    pop[:N] = np.clip(
-                        pop[:N] + deltas["delta_population"][:N], 0.0, 1.0
-                    )
-                    new_world = new_world.copy_with_population(pop)
+            # Direct overrides (for testing / scenario tuning)
+            direct = fmod.get("direct_modifiers", {})
+            if direct:
+                for k, v in direct.items():
+                    if hasattr(mods, k):
+                        setattr(mods, k, v)
 
-                # Write the modified world back to the inner env
-                self._set_world(new_world)
+            faction.external_modifiers = mods
 
-                self._military_state = new_military_state
+    # ── Physics Initialization ─────────────────────────────────────────
 
-                # 3. Military victory check
-                victory_status = check_victory_conditions(new_military_state)
-                if victory_status['victory_achieved']:
-                    terminated = True
-                    info['military_victory'] = True
+    def _init_physics(self, cfg: Dict[str, Any]) -> None:
+        """Initialize physics engine from scenario config."""
+        physics_cfg = cfg.get("map_physics")
+        yaml_path = cfg.get("physics_yaml_path")
 
-                # 4. Military reward
-                if hasattr(self, '_prev_military_state') and self._prev_military_state is not None:
-                    military_reward = compute_military_reward(
-                        new_military_state,
-                        self._prev_military_state,
-                        military_action['action_type'] if military_action else None,
-                    )
+        config = None
+        if physics_cfg:
+            # Build MapPhysicsConfig from inline config dict
+            config = MapPhysicsConfig(
+                name=physics_cfg.get("name", "default"),
+                n_sectors=physics_cfg.get("n_sectors", self.n_clusters),
+                climate_type=physics_cfg.get("climate", {}).get("type", "continental"),
+                temperature_curve={
+                    int(k): float(v)
+                    for k, v in physics_cfg.get("climate", {}).get(
+                        "temperature_curve", {0: 5.0, 50: 2.0, 100: -5.0, 150: -20.0, 200: -15.0}
+                    ).items()
+                },
+                base_humidity=physics_cfg.get("climate", {}).get("humidity", 60.0),
+                base_wind_ms=physics_cfg.get("climate", {}).get("wind_ms", 5.0),
+                steps_per_day=physics_cfg.get("climate", {}).get("steps_per_day", 4),
+                sectors={
+                    int(k): v for k, v in physics_cfg.get("sectors", {}).items()
+                },
+                supply_routes=physics_cfg.get("supply_routes", []),
+                factions=physics_cfg.get("factions", {}),
+            )
 
-        # Store state for next step's reward calculation
-        self._prev_military_state = (
-            self._military_state.copy_with() if self._military_state else None
+        states, los, config = init_physics_for_world(
+            self.world,
+            physics_config=config,
+            yaml_path=yaml_path,
         )
+        self.world.physics_states = states
+        self.world.los_state = los
+        self.world.physics_config = config
 
-        # 5. Total reward
-        total_reward = reward + military_reward
+    # ── Opponent ──────────────────────────────────────────────────────────
 
-        # 6. Extend observation
-        extended_obs = self._extend_obs(obs)
+    def _get_opponent_action(self) -> Tuple[int, int, int, int, int]:
+        """Get opponent action from policy or use random."""
+        if self.opponent_policy is not None:
+            opp_obs = world_to_obs_array(self.world, self.opponent_id, self.max_clusters)
+            opp_action = self.opponent_policy(opp_obs)
+            return (int(opp_action[0]), int(opp_action[1]), int(opp_action[2]),
+                    int(opp_action[3]), int(opp_action[4]))
+        else:
+            # Random valid-ish action: mostly NOOP with occasional produce/move
+            r = self._rng.random()
+            if r < 0.5:
+                return (0, 0, 0, 0, 0)  # NOOP
+            elif r < 0.7:
+                # Random produce
+                src = self._rng.integers(0, self.n_clusters)
+                ut = self._rng.integers(0, N_UNIT_TYPES)
+                return (ActionType.PRODUCE.value, int(src), 0, int(ut), 1)
+            elif r < 0.85:
+                # Random move
+                src = self._rng.integers(0, self.n_clusters)
+                tgt = self._rng.integers(0, self.n_clusters)
+                return (ActionType.MOVE.value, int(src), int(tgt), 0, 0)
+            else:
+                # Random reinforce
+                src = self._rng.integers(0, self.n_clusters)
+                return (ActionType.REINFORCE.value, int(src), 0, 0, 0)
 
-        # 7. Enrich info
-        info["military"] = self._military_info()
-        info["military_reward"] = military_reward
-        if self._last_metrics:
-            info.update({f"military_{k}": v for k, v in self._last_metrics.items()})
+    # ── Render ────────────────────────────────────────────────────────────
 
-        return extended_obs, float(total_reward), terminated, truncated, info
+    def render(self) -> Optional[str]:
+        if self.world is None:
+            return None
 
-    # ── Military State Access ───────────────────────────────────────────────── #
+        lines = [f"=== Step {self._step_count} ==="]
+        for fid, f in self.world.factions.items():
+            hp = self.world.faction_total_hp(fid)
+            nc = self.world.faction_cluster_count(fid)
+            res = f.resources.round(1)
+            lines.append(f"  F{fid} ({f.name}): HP={hp:.0f} clusters={nc} res={res}")
+
+        for c in self.world.clusters:
+            owner = c.owner_faction if c.owner_faction is not None else "none"
+            n_units = len(c.alive_units)
+            lines.append(f"  C{c.cluster_id} [{c.terrain.name}] owner={owner} units={n_units} supply={c.supply:.1f}")
+
+        for obj in self.world.objectives:
+            status = "DONE" if obj.is_completed else f"{obj.completion_progress:.0%}"
+            lines.append(f"  Obj{obj.objective_id} ({obj.name}): {status}")
+
+        text = "\n".join(lines)
+        if self.render_mode == "human":
+            print(text)
+        return text
+
+    # ── Utility ───────────────────────────────────────────────────────────
+
+    def get_action_mask(self) -> NDArray[np.bool_]:
+        """Return a flat boolean mask over the action space.
+
+        For simplicity, this returns a per-dimension mask rather than
+        a full combinatorial mask.  Invalid actions get a small negative
+        reward from apply_action, which is sufficient for PPO training.
+        """
+        # For now, return all-True (no masking)
+        # TODO: implement per-dimension action masking for curriculum
+        return np.ones(self.action_space.nvec.sum(), dtype=bool)
 
     @property
-    def military_state(self) -> Optional[WorldMilitaryState]:
-        """Get current military state."""
-        return self._military_state
+    def action_meanings(self) -> List[str]:
+        return [at.name for at in ActionType]
 
-    # ── Internal Helpers ───────────────────────────────────────────────────── #
+    def set_opponent_policy(self, policy) -> None:
+        """Hot-swap the opponent policy (for self-play league)."""
+        self.opponent_policy = policy
 
-    def _get_world(self):
-        """Get GravitasWorld from wrapped env, traversing wrapper chain."""
-        env = self.env
-        while env is not None:
-            world = getattr(env, "world", None)
-            if world is not None:
-                return world
-            env = getattr(env, "env", None)
-        return None
-
-    def _set_world(self, new_world) -> None:
-        """Write a modified GravitasWorld back into the inner GravitasEnv."""
-        env = self.env
-        while env is not None:
-            if hasattr(env, "_world") and env._world is not None:
-                env._world = new_world
-                return
-            env = getattr(env, "env", None)
-
-    def _initialize_starting_units(self, n_clusters: int) -> List[MilitaryUnit]:
-        """Create initial military units for testing."""
-        units = []
-
-        inf_hp   = self.military_params.get_max_hp(MilitaryUnitType.INFANTRY)
-        armor_hp = self.military_params.get_max_hp(MilitaryUnitType.ARMOR)
-
-        # Add some infantry to cluster 0
-        for i in range(2):
-            units.append(MilitaryUnit(
-                unit_id=i + 1,
-                unit_type=MilitaryUnitType.INFANTRY,
-                cluster_id=0,
-                hit_points=inf_hp,
-                combat_effectiveness=1.0,
-                supply_level=0.8,
-                experience=0.0,
-                morale=0.9,
-                objective_id=1
-            ))
-
-        # Add armor to cluster 1
-        units.append(MilitaryUnit(
-            unit_id=3,
-            unit_type=MilitaryUnitType.ARMOR,
-            cluster_id=1,
-            hit_points=armor_hp,
-            combat_effectiveness=1.0,
-            supply_level=0.7,
-            experience=0.0,
-            morale=0.8,
-            objective_id=2
-        ))
-
-        return units
-
-    def _decode_military_action(self, military_action: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert action space format to internal format.
-
-        Accepts either gym-space format (integer indices) or pre-decoded format
-        (string action_type, MilitaryUnitType unit_type).
-        """
-        at = military_action['action_type']
-        action_type = (
-            at if isinstance(at, str)
-            else self._military_action_space.action_types[int(at)]
-        )
-
-        ut = military_action['unit_type']
-        unit_type = (
-            ut if isinstance(ut, MilitaryUnitType)
-            else self._military_action_space.unit_types[int(ut)]
-        )
-
-        raw_intensity = military_action.get('intensity', 0.5)
-        if hasattr(raw_intensity, '__len__'):
-            intensity = float(raw_intensity[0])
-        else:
-            intensity = float(raw_intensity)
-
-        return {
-            'action_type':    action_type,
-            'target_cluster': int(military_action['target_cluster']),
-            'unit_type':      unit_type,
-            'intensity':      intensity,
-        }
-
-    def _extend_obs(self, base_obs: NDArray[np.float32]) -> NDArray[np.float32]:
-        """Append military features to observation."""
-        if self._military_state is None:
-            # Return zeros if no military state
-            military_obs_dim = 3 * self._max_N + 5
-            return np.concatenate([
-                base_obs,
-                np.zeros(military_obs_dim, dtype=np.float32)
-            ])
-
-        # Per-cluster military features
-        cluster_features = []
-        for i in range(self._max_N):
-            if i < len(self._military_state.clusters):
-                cluster = self._military_state.clusters[i]
-                cluster_features.extend([
-                    cluster.unit_count,                    # Unit count
-                    cluster.total_combat_power,          # Combat power
-                    cluster.supply_depot                  # Supply level
-                ])
-            else:
-                cluster_features.extend([0.0, 0.0, 0.0])  # Padding
-
-        # Global military features
-        global_features = [
-            self._military_state.global_supply,
-            self._military_state.global_reinforcement_pool,
-            sum(obj.completion_progress for obj in self._military_state.objectives) / max(1, len(self._military_state.objectives)),
-            float(check_victory_conditions(self._military_state)['completion_percentage']),
-            1.0 if check_victory_conditions(self._military_state)['victory_achieved'] else 0.0
-        ]
-
-        military_obs = np.array(cluster_features + global_features, dtype=np.float32)
-        return np.concatenate([base_obs, military_obs])
-
-    def _military_info(self) -> Dict[str, Any]:
-        """Build military info dictionary."""
-        if self._military_state is None:
-            return {
-                'total_units': 0,
-                'total_combat_power': 0.0,
-                'global_supply': 0.0,
-                'global_reinforcement_pool': 0.0,
-                'objectives_completed': 0,
-                'objectives_total': 0,
-                'victory_achieved': False,
-                'completion_percentage': 0.0
-            }
-
-        victory_status = check_victory_conditions(self._military_state)
-        return {
-            'total_units': self._military_state.total_unit_count,
-            'total_combat_power': self._military_state.total_combat_power,
-            'global_supply': self._military_state.global_supply,
-            'global_reinforcement_pool': self._military_state.global_reinforcement_pool,
-            'objectives_completed': sum(1 for obj in self._military_state.objectives if obj.is_completed),
-            'objectives_total': len(self._military_state.objectives),
-            'victory_achieved': victory_status['victory_achieved'],
-            'completion_percentage': victory_status['completion_percentage'],
-            'objectives': [
-                {
-                    'id': obj.objective_id,
-                    'name': obj.name,
-                    'type': obj.objective_type,
-                    'progress': obj.completion_progress,
-                    'completed': obj.is_completed
-                }
-                for obj in self._military_state.objectives
-            ]
-        }
-
-# ─────────────────────────────────────────────────────────────────────────── #
-# Utility Functions                                                             #
-# ─────────────────────────────────────────────────────────────────────────── #
-
-def create_military_objectives(
-    n_clusters: int,
-    objective_config: Optional[List[Dict[str, Any]]] = None
-) -> List[Dict[str, Any]]:
-    """
-    Create military objectives configuration.
-
-    Args:
-        n_clusters: Number of clusters in the world
-        objective_config: Custom objective configuration, or None for defaults
-
-    Returns:
-        List of objective definitions
-    """
-    if objective_config is not None:
-        return objective_config
-
-    # Default objectives
-    return [
-        {
-            'objective_id': 1,
-            'name': 'Capture Central Cluster',
-            'objective_type': 'capture',
-            'target_cluster_id': 0,
-            'required_units': 3,
-            'reward_value': 25.0,
-        },
-        {
-            'objective_id': 2,
-            'name': 'Secure Supply Route',
-            'objective_type': 'hold',
-            'target_cluster_id': 1,
-            'required_units': 2,
-            'reward_value': 15.0,
-        },
-        {
-            'objective_id': 3,
-            'name': 'Eliminate Enemy Forces',
-            'objective_type': 'destroy',
-            'target_cluster_id': 2,
-            'required_units': 1,
-            'reward_value': 20.0,
-        }
-    ]
-
-def compute_adjacency_matrix(
-    n_clusters: int,
-    rng: np.random.Generator,
-    connectivity: float = 0.7
-) -> NDArray[np.bool_]:
-    """
-    Compute a simple adjacency matrix for military movement.
-
-    Creates a connected graph where clusters are connected with given probability.
-
-    Args:
-        n_clusters: Number of clusters
-        rng: Random number generator
-        connectivity: Probability of connection between clusters (0-1)
-
-    Returns:
-        Boolean adjacency matrix (n_clusters x n_clusters)
-    """
-    # Create a connected graph using Erdős–Rényi model
-    A = np.zeros((n_clusters, n_clusters), dtype=bool)
-
-    # Ensure graph is connected by creating a spanning tree first
-    for i in range(1, n_clusters):
-        parent = rng.integers(0, i)
-        A[i, parent] = True
-        A[parent, i] = True
-
-    # Add additional random connections
-    for i in range(n_clusters):
-        for j in range(i + 1, n_clusters):
-            if not A[i, j] and rng.random() < connectivity:
-                A[i, j] = True
-                A[j, i] = True
-
-    # Zero diagonal (no self-connections)
-    np.fill_diagonal(A, False)
-
-    return A
-
-def create_simple_military_action(
-    action_type: str = "deploy",
-    target_cluster: int = 0,
-    unit_type: str = "INFANTRY",
-    intensity: float = 0.5
-) -> Dict[str, Any]:
-    """
-    Create a simple military action for testing.
-
-    Args:
-        action_type: Type of military action
-        target_cluster: Target cluster ID
-        unit_type: Type of military unit
-        intensity: Action intensity (0-1)
-
-    Returns:
-        Military action dictionary
-    """
-    return {
-        'action_type': action_type,
-        'target_cluster': target_cluster,
-        'unit_type': unit_type,
-        'intensity': intensity
-    }
+    def get_world_state(self) -> Optional[CowWorldState]:
+        """Direct access to world state for debugging / advanced reward."""
+        return self.world
