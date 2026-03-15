@@ -2,55 +2,47 @@
 research_system.py — HOI4-style Research & Technology system.
 
 ═══════════════════════════════════════════════════════════════════════════════
-6 TECH BRANCHES
+10 TECH BRANCHES — Historically based (1940s–1960s progression)
 
-  INDUSTRY    — Factory efficiency, construction speed, resource extraction
-  ELECTRONICS — Radar, code-breaking, communications, computing
-  NAVAL       — Ship design, submarine tech, torpedoes, sonar
-  AIR         — Aircraft design, engines, bombing accuracy, radar intercept
-  LAND        — Infantry equipment, armor, artillery, fortifications
-  DOCTRINE    — Military doctrine, combined arms, logistics, special forces
+  INDUSTRY        — War production, construction, synthetic materials, automation
+  ELECTRONICS     — Radar, vacuum tubes, transistors, early computing
+  NAVAL           — Fire control, submarines, torpedoes, sonar, nuclear propulsion
+  AIR             — Engines, bombsights, jet propulsion, swept wings, strategic bombers
+  LAND            — Infantry kit, self-propelled artillery, armor, guided weapons
+  DOCTRINE        — Flexible defense, combined arms, deception, deep battle, total war
+  NUCLEAR         — Atomic theory, chain reaction, fission weapon, H-bomb, warheads
+  ROCKETRY        — V-1 flying bomb, V-2 ballistic, SAMs, cruise missiles, IRBMs
+  CRYPTOGRAPHY    — SIGINT, Enigma breaking, ECM/chaff, COMINT networks, automation
+  INFRASTRUCTURE  — Railways, temporary harbors, civil defense, highways, bunkers
 
-Each branch has 5 tiers (0-4). Higher tiers unlock better bonuses.
-Research takes turns proportional to tier. Only 1 project active per branch.
-
-═══════════════════════════════════════════════════════════════════════════════
-HOW IT WORKS
-
-  1. Faction chooses: RESEARCH branch (e.g., RESEARCH NAVAL)
-  2. System starts the next available tier in that branch
-  3. Research progresses each turn based on:
-     - Base speed (affected by ELECTRONICS level)
-     - Number of researchers (from Outer Party technicians)
-     - Factory support (CIVIL_FACTORY output helps)
-  4. When complete: permanent bonus applied to faction
+Each branch has 5 tiers (T1–T5). Higher tiers = better bonuses + longer research.
+Max 2 simultaneous projects. Cross-branch prerequisites create strategic choices.
 
 ═══════════════════════════════════════════════════════════════════════════════
-BONUSES PER TIER
+PREREQUISITE WEB (creates strategic dilemmas)
 
-  INDUSTRY:
-    T1: +10% factory output         T2: +10% construction speed
-    T3: +15% resource extraction    T4: +20% factory output (total +30%)
+  Nuclear T3 (Fission Weapon)     ← Electronics T2 + Industry T3
+  Nuclear T5 (Miniaturized)       ← Rocketry T3
+  Rocketry T5 (IRBM)             ← Nuclear T3
+  Rocketry T3 (SAM)              ← Electronics T2
+  Air T3 (Jet Engine)            ← Industry T2
+  Air T5 (Strategic Jet Bomber)  ← Rocketry T1
+  Naval T5 (Nuclear Sub)         ← Nuclear T2
+  Land T5 (ATGM)                 ← Electronics T3 + Rocketry T2
+  Electronics T5 (Integrated Circuits) ← Industry T3
+  Infrastructure T4 (Highway)    ← Industry T2
 
-  ELECTRONICS:
-    T1: +15% radar range            T2: +20% code-breaking speed
-    T3: +10% all production         T4: +25% intel quality
+═══════════════════════════════════════════════════════════════════════════════
+HISTORICAL NOTES
 
-  NAVAL:
-    T1: +10% ship combat            T2: +15% submarine stealth
-    T3: Unlock HEAVY_CRUISER build  T4: +20% torpedo damage
-
-  AIR:
-    T1: +10% fighter effectiveness  T2: +15% bombing accuracy
-    T3: +10% aircraft speed         T4: Unlock JET_FIGHTER
-
-  LAND:
-    T1: +10% infantry combat        T2: +15% artillery range
-    T3: +10% fortification strength T4: +20% armor effectiveness
-
-  DOCTRINE:
-    T1: +10% org recovery           T2: +15% supply efficiency
-    T3: +10% planning speed         T4: +20% combined arms bonus
+  Every tech corresponds to a real historical development:
+  - Chain Home radar (1940), Colossus computer (1944), Transistor (1947)
+  - Type XXI U-boat snorkel (1944), Mk 24 FIDO acoustic torpedo (1943)
+  - Me 262 / Gloster Meteor (1944), MiG-15 / F-86 Sabre (1947)
+  - Manhattan Project (1942-45), Ivy Mike H-bomb (1952)
+  - V-1 pulse-jet (1944), V-2 ballistic (1944), Nike Ajax SAM (1953)
+  - Mulberry harbour (1944), Autobahn/M1 motorway (1959)
+  - Operation Bodyguard/Fortitude deception (1944)
 """
 
 from __future__ import annotations
@@ -67,26 +59,34 @@ import numpy as np
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 class TechBranch(Enum):
-    INDUSTRY    = 0
-    ELECTRONICS = 1
-    NAVAL       = 2
-    AIR         = 3
-    LAND        = 4
-    DOCTRINE    = 5
+    INDUSTRY        = 0
+    ELECTRONICS     = 1
+    NAVAL           = 2
+    AIR             = 3
+    LAND            = 4
+    DOCTRINE        = 5
+    NUCLEAR         = 6
+    ROCKETRY        = 7
+    CRYPTOGRAPHY    = 8
+    INFRASTRUCTURE  = 9
 
-N_BRANCHES = 6
+N_BRANCHES = 10
 MAX_TIER = 5
 
-# Research time per tier (turns) — increasing cost, diminishing returns
-TIER_RESEARCH_TIME = [8, 12, 18, 25, 35]  # T1=8, T2=12, T3=18, T4=25, T5=35
+# Research time per tier (turns/weeks) — increasing cost
+TIER_RESEARCH_TIME = [8, 12, 18, 25, 35]  # T1=8wk, T2=12wk, T3=18wk, T4=25wk, T5=35wk
 
 BRANCH_NAMES = {
-    TechBranch.INDUSTRY:    "Industry",
-    TechBranch.ELECTRONICS: "Electronics",
-    TechBranch.NAVAL:       "Naval Tech",
-    TechBranch.AIR:         "Air Tech",
-    TechBranch.LAND:        "Land Tech",
-    TechBranch.DOCTRINE:    "Doctrine",
+    TechBranch.INDUSTRY:        "Industry",
+    TechBranch.ELECTRONICS:     "Electronics",
+    TechBranch.NAVAL:           "Naval Tech",
+    TechBranch.AIR:             "Air Tech",
+    TechBranch.LAND:            "Land Tech",
+    TechBranch.DOCTRINE:        "Doctrine",
+    TechBranch.NUCLEAR:         "Nuclear",
+    TechBranch.ROCKETRY:        "Rocketry",
+    TechBranch.CRYPTOGRAPHY:    "Cryptography",
+    TechBranch.INFRASTRUCTURE:  "Infrastructure",
 }
 
 
@@ -99,6 +99,7 @@ class TechBonus:
     """Bonus granted when a tech tier is completed."""
     name: str
     description: str
+    year: int = 1944                    # historical year of development
     # Multiplier bonuses (1.0 = no bonus, 1.1 = +10%)
     factory_output_mult: float = 1.0
     construction_speed_mult: float = 1.0
@@ -120,81 +121,249 @@ class TechBonus:
     supply_efficiency_mult: float = 1.0
     planning_speed_mult: float = 1.0
     combined_arms_mult: float = 1.0
-    production_mult: float = 1.0  # general production bonus
+    production_mult: float = 1.0        # general production bonus
+    # New bonus types for expanded branches
+    air_defense_mult: float = 1.0       # SAM/AAA/interception effectiveness
+    strategic_strike_mult: float = 1.0  # V-weapons, missiles, strategic bombing
+    naval_strike_mult: float = 1.0      # anti-ship capability (air/missile)
+    invasion_support_mult: float = 1.0  # amphibious operations bonus
+    population_resilience_mult: float = 1.0  # civilian survival, morale
+    counter_intel_mult: float = 1.0     # counter-espionage effectiveness
+    power_generation_mult: float = 1.0  # power plant output
+    research_speed_mult: float = 1.0    # bonus to all research speed
+    military_mobility_mult: float = 1.0 # ground unit movement speed
+    nuclear_damage_mult: float = 1.0    # nuclear weapon damage
+    deterrence_mult: float = 1.0        # strategic deterrence value
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# INDUSTRY — War production to nuclear age                                     #
+# Historical: US War Production Board (1942) → Liberty ships → synthetic       #
+# rubber → assembly lines → Calder Hall nuclear power (1956)                   #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_INDUSTRY_TREE = [
+    TechBonus("War Production Board", "Factory output +8%. Standardized parts.",
+             year=1942, factory_output_mult=1.08),
+    TechBonus("Prefabricated Construction", "Construction +10%, factory +5%. Liberty ship methods.",
+             year=1943, construction_speed_mult=1.10, factory_output_mult=1.05),
+    TechBonus("Synthetic Materials", "Resources +12%, production +5%. Buna-S rubber, Fischer-Tropsch.",
+             year=1944, resource_extraction_mult=1.12, production_mult=1.05),
+    TechBonus("Assembly Line Automation", "Factory +12%, construction +8%. Semi-automated.",
+             year=1952, factory_output_mult=1.12, construction_speed_mult=1.08),
+    TechBonus("Nuclear Power Plants", "Power +20%, production +10%. Calder Hall / Obninsk type.",
+             year=1956, power_generation_mult=1.20, production_mult=1.10, factory_output_mult=1.08),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# ELECTRONICS — Radar to computing                                             #
+# Historical: Chain Home (1940) → Colossus (1944) → transistor (1947) →        #
+# SAGE (1958) → integrated circuits (1961)                                     #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_ELECTRONICS_TREE = [
+    TechBonus("Chain Home Radar", "Radar +12%. Early warning network like Battle of Britain.",
+             year=1940, radar_range_mult=1.12),
+    TechBonus("Colossus Computer", "Code-breaking +15%. Bletchley Park electronic code-breaker.",
+             year=1944, code_break_speed_mult=1.15, research_speed_mult=1.05),
+    TechBonus("Transistor Circuits", "Production +8%, radar +10%. Bell Labs 1947 breakthrough.",
+             year=1947, production_mult=1.08, radar_range_mult=1.10),
+    TechBonus("SAGE Air Defense", "Air defense +15%, intel +12%. Semi-Automatic Ground Environment.",
+             year=1958, air_defense_mult=1.15, intel_quality_mult=1.12, radar_range_mult=1.08),
+    TechBonus("Integrated Circuits", "Intel +15%, research +12%. Miniaturized electronics revolution.",
+             year=1961, intel_quality_mult=1.15, research_speed_mult=1.12, production_mult=1.05),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# NAVAL — Ship warfare to nuclear submarines                                   #
+# Historical: Mk 37 fire control → Type XXI snorkel → Mk 24 FIDO →            #
+# improved sonar → USS Nautilus (1955)                                         #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_NAVAL_TREE = [
+    TechBonus("Mk 37 Fire Control", "Ship combat +8%. Electromechanical gun director.",
+             year=1941, ship_combat_mult=1.08),
+    TechBonus("Type XXI Snorkel", "Sub stealth +12%. Submarine snorkel for submerged diesel.",
+             year=1944, sub_stealth_mult=1.12),
+    TechBonus("Mk 24 FIDO Torpedo", "Torpedo +12%, combat +5%. Acoustic homing 'mine'.",
+             year=1943, torpedo_mult=1.12, ship_combat_mult=1.05),
+    TechBonus("Active/Passive Sonar", "Combat +10%, sub stealth +8%. Dual-mode sonar array.",
+             year=1952, ship_combat_mult=1.10, sub_stealth_mult=1.08),
+    TechBonus("Nuclear Submarine", "Sub stealth +18%, torpedo +12%. USS Nautilus — unlimited range.",
+             year=1955, sub_stealth_mult=1.18, torpedo_mult=1.12, naval_strike_mult=1.10),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# AIR — Propeller to jet age                                                   #
+# Historical: Merlin supercharger → Norden bombsight → Me 262 jet →            #
+# F-86 Sabre swept wing → V-bomber/B-52 strategic jet                          #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_AIR_TREE = [
+    TechBonus("Rolls-Royce Merlin 61", "Fighter +8%, speed +5%. Two-stage supercharger.",
+             year=1942, fighter_mult=1.08, aircraft_speed_mult=1.05),
+    TechBonus("Norden Bombsight", "Bombing +12%. Precision level bombing from altitude.",
+             year=1943, bombing_accuracy_mult=1.12),
+    TechBonus("Jet Engine", "Speed +12%, fighter +10%. Me 262 / Gloster Meteor type.",
+             year=1944, aircraft_speed_mult=1.12, fighter_mult=1.10),
+    TechBonus("Swept-Wing Design", "Fighter +12%, speed +10%. MiG-15 / F-86 Sabre era.",
+             year=1947, fighter_mult=1.12, aircraft_speed_mult=1.10),
+    TechBonus("Strategic Jet Bomber", "Bombing +15%, strike +12%. V-bomber / B-52 class.",
+             year=1952, bombing_accuracy_mult=1.15, strategic_strike_mult=1.12, aircraft_speed_mult=1.08),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# LAND — Infantry to guided weapons                                            #
+# Historical: Improved kit (1942) → M7 Priest SP gun → mine warfare →          #
+# composite armor (1950s) → SS.11 ATGM (1956)                                  #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_LAND_TREE = [
+    TechBonus("Improved Infantry Kit", "Infantry +8%. Better rifle, helmet, webbing.",
+             year=1942, infantry_combat_mult=1.08),
+    TechBonus("Self-Propelled Artillery", "Artillery +12%. M7 Priest / Sexton type.",
+             year=1943, artillery_mult=1.12),
+    TechBonus("Mine Warfare Doctrine", "Fort +10%, infantry +5%. Anti-tank/anti-personnel mines.",
+             year=1944, fortification_mult=1.10, infantry_combat_mult=1.05),
+    TechBonus("Composite Armor Plate", "Armor +12%, fort +5%. Spaced/sloped armor design.",
+             year=1952, armor_mult=1.12, fortification_mult=1.05),
+    TechBonus("Anti-Tank Guided Missile", "Artillery +15%, armor +10%. SS.11 wire-guided ATGM.",
+             year=1956, artillery_mult=1.15, armor_mult=1.10),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# DOCTRINE — Military organization and tactics                                 #
+# Historical: Elastic defense (1940) → combined arms (1943) →                  #
+# Bodyguard deception (1944) → Soviet deep battle → total war mobilization     #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_DOCTRINE_TREE = [
+    TechBonus("Flexible Defense", "Org recovery +8%. Defense in depth, elastic retreat.",
+             year=1940, org_recovery_mult=1.08),
+    TechBonus("Combined Arms Tactics", "Combined arms +10%, supply +5%. Infantry-tank-air coordination.",
+             year=1943, combined_arms_mult=1.10, supply_efficiency_mult=1.05),
+    TechBonus("Strategic Deception", "Planning +12%, intel +8%. Operation Bodyguard/Fortitude.",
+             year=1944, planning_speed_mult=1.12, intel_quality_mult=1.08),
+    TechBonus("Deep Battle Operations", "Combined arms +10%, planning +10%. Soviet operational art.",
+             year=1945, combined_arms_mult=1.10, planning_speed_mult=1.10, supply_efficiency_mult=1.05),
+    TechBonus("Total War Mobilization", "All military +8%, supply +10%, mobility +8%.",
+             year=1950, combined_arms_mult=1.08, supply_efficiency_mult=1.10,
+             military_mobility_mult=1.08, org_recovery_mult=1.05),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# NUCLEAR — Atomic theory to deliverable warheads                              #
+# Historical: Manhattan Project (1942) → Chicago Pile-1 (1942) →               #
+# Trinity/Fat Man (1945) → Ivy Mike H-bomb (1952) → Mk 7 miniaturized (1956)  #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_NUCLEAR_TREE = [
+    TechBonus("Atomic Theory", "Research +5%. Theoretical physics program established.",
+             year=1942, research_speed_mult=1.05),
+    TechBonus("Chain Reaction", "Power +10%, research +5%. Chicago Pile-1 type reactor.",
+             year=1943, power_generation_mult=1.10, research_speed_mult=1.05),
+    TechBonus("Fission Weapon", "Nuclear damage +50%, deterrence +30%. Fat Man / Little Boy type.",
+             year=1945, nuclear_damage_mult=1.50, deterrence_mult=1.30, strategic_strike_mult=1.15),
+    TechBonus("Thermonuclear Device", "Nuclear +100%, deterrence +50%. Ivy Mike — city-killer.",
+             year=1952, nuclear_damage_mult=2.00, deterrence_mult=1.50, strategic_strike_mult=1.20),
+    TechBonus("Miniaturized Warhead", "Nuclear +30%, deterrence +40%. Deliverable by missile/aircraft.",
+             year=1956, nuclear_damage_mult=1.30, deterrence_mult=1.40, strategic_strike_mult=1.25),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# ROCKETRY — V-weapons to ballistic missiles                                   #
+# Historical: V-1 (1944) → V-2 (1944) → Nike Ajax SAM (1953) →                #
+# SSM-N-8 Regulus cruise missile (1955) → Thor IRBM (1957)                     #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_ROCKETRY_TREE = [
+    TechBonus("V-1 Flying Bomb", "Strategic strike +10%. Pulse-jet cruise missile, terror weapon.",
+             year=1944, strategic_strike_mult=1.10, bombing_accuracy_mult=1.05),
+    TechBonus("V-2 Ballistic Missile", "Strike +15%. Liquid-fuel rocket, unstoppable.",
+             year=1944, strategic_strike_mult=1.15),
+    TechBonus("Nike Ajax SAM", "Air defense +15%, fighter +5%. First operational surface-to-air missile.",
+             year=1953, air_defense_mult=1.15, fighter_mult=1.05),
+    TechBonus("Regulus Cruise Missile", "Naval strike +15%, strike +10%. Ship/sub-launched cruise missile.",
+             year=1955, naval_strike_mult=1.15, strategic_strike_mult=1.10),
+    TechBonus("Thor IRBM", "Strike +25%, deterrence +30%. Intermediate-range ballistic missile.",
+             year=1957, strategic_strike_mult=1.25, deterrence_mult=1.30),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# CRYPTOGRAPHY — Signals intelligence to automation                            #
+# Historical: Y-stations (1940) → Bombe/Enigma (1941) → Window/chaff (1943) → #
+# GCHQ/NSA COMINT (1952) → automated SIGINT (1960)                            #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_CRYPTOGRAPHY_TREE = [
+    TechBonus("Signals Intelligence", "Intel +10%. Y-station intercept network, traffic analysis.",
+             year=1940, intel_quality_mult=1.10),
+    TechBonus("Enigma Breaking", "Code-break +18%. Bombe machine — read enemy communications.",
+             year=1941, code_break_speed_mult=1.18, intel_quality_mult=1.05),
+    TechBonus("Electronic Countermeasures", "Air defense +10%, naval +8%. Window/chaff, jammers.",
+             year=1943, air_defense_mult=1.10, ship_combat_mult=1.08, counter_intel_mult=1.10),
+    TechBonus("COMINT Network", "Intel +15%, counter-intel +12%. GCHQ/NSA-type signals network.",
+             year=1952, intel_quality_mult=1.15, counter_intel_mult=1.12),
+    TechBonus("Automated SIGINT", "Intel +15%, code-break +15%, research +5%. Machine-aided analysis.",
+             year=1960, intel_quality_mult=1.15, code_break_speed_mult=1.15, research_speed_mult=1.05),
+]
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# INFRASTRUCTURE — Logistics, transport, civil defense                         #
+# Historical: Railway expansion → Mulberry harbour (1944) → civil defense →    #
+# M1 Motorway (1959) → underground command bunkers                             #
+# ═══════════════════════════════════════════════════════════════════════════ #
+_INFRASTRUCTURE_TREE = [
+    TechBonus("Railway Expansion", "Supply +10%. Increased rail capacity, marshalling yards.",
+             year=1942, supply_efficiency_mult=1.10),
+    TechBonus("Mulberry Harbour", "Invasion support +15%, supply +5%. Temporary port construction.",
+             year=1944, invasion_support_mult=1.15, supply_efficiency_mult=1.05),
+    TechBonus("Civil Defense Program", "Population resilience +15%. Bunkers, shelters, evacuation drills.",
+             year=1950, population_resilience_mult=1.15, fortification_mult=1.05),
+    TechBonus("Highway Network", "Supply +12%, mobility +10%. Motorway/Autobahn construction.",
+             year=1955, supply_efficiency_mult=1.12, military_mobility_mult=1.10),
+    TechBonus("Underground Command", "Resilience +15%, fort +10%. Hardened bunkers, continuity of govt.",
+             year=1960, population_resilience_mult=1.15, fortification_mult=1.10,
+             counter_intel_mult=1.08),
+]
 
 
 TECH_TREE: Dict[TechBranch, List[TechBonus]] = {
-    TechBranch.INDUSTRY: [
-        TechBonus("Improved Machine Tools", "Factory output +8%", factory_output_mult=1.08),
-        TechBonus("Prefab Construction", "Construction speed +8%, factory +5%",
-                  construction_speed_mult=1.08, factory_output_mult=1.05),
-        TechBonus("Synthetic Materials", "Resource extraction +10%, production +5%",
-                  resource_extraction_mult=1.10, production_mult=1.05),
-        TechBonus("Automated Assembly", "Factory +12%, construction +8%",
-                  factory_output_mult=1.12, construction_speed_mult=1.08),
-        TechBonus("Nuclear Power", "Factory +15%, all production +8% (requires Electronics T3)",
-                  factory_output_mult=1.15, production_mult=1.08),
-    ],
-    TechBranch.ELECTRONICS: [
-        TechBonus("Improved Radar", "Radar range +10%", radar_range_mult=1.10),
-        TechBonus("Cryptanalysis Machine", "Code-breaking +15%", code_break_speed_mult=1.15),
-        TechBonus("Transistor Circuits", "Production +6%, radar +8%",
-                  production_mult=1.06, radar_range_mult=1.08),
-        TechBonus("Electronic Warfare", "Intel +15%, code-break +10%",
-                  intel_quality_mult=1.15, code_break_speed_mult=1.10),
-        TechBonus("Computing Machines", "Intel +20%, all research +15%",
-                  intel_quality_mult=1.20, production_mult=1.05),
-    ],
-    TechBranch.NAVAL: [
-        TechBonus("Fire Control Mk II", "Ship combat +8%", ship_combat_mult=1.08),
-        TechBonus("Snorkel Submarines", "Sub stealth +10%", sub_stealth_mult=1.10),
-        TechBonus("Acoustic Torpedoes", "Torpedo +12%, ship combat +5%",
-                  torpedo_mult=1.12, ship_combat_mult=1.05),
-        TechBonus("Advanced Sonar", "Sub stealth +10%, ship combat +8% (requires Electronics T2)",
-                  sub_stealth_mult=1.10, ship_combat_mult=1.08),
-        TechBonus("Nuclear Propulsion", "Sub stealth +15%, torpedo +10% (requires Industry T4)",
-                  sub_stealth_mult=1.15, torpedo_mult=1.10),
-    ],
-    TechBranch.AIR: [
-        TechBonus("Improved Engines", "Fighter +8%, speed +5%",
-                  fighter_mult=1.08, aircraft_speed_mult=1.05),
-        TechBonus("Precision Bombsight", "Bombing accuracy +10%", bombing_accuracy_mult=1.10),
-        TechBonus("All-Weather Navigation", "Bombing +8%, speed +5%",
-                  bombing_accuracy_mult=1.08, aircraft_speed_mult=1.05),
-        TechBonus("Swept-Wing Design", "Fighter +10%, speed +10%",
-                  fighter_mult=1.10, aircraft_speed_mult=1.10),
-        TechBonus("Jet Propulsion", "Fighter +12%, speed +12% (requires Industry T3)",
-                  fighter_mult=1.12, aircraft_speed_mult=1.12),
-    ],
-    TechBranch.LAND: [
-        TechBonus("Improved Infantry Kit", "Infantry +8%", infantry_combat_mult=1.08),
-        TechBonus("Self-Propelled Artillery", "Artillery +10%", artillery_mult=1.10),
-        TechBonus("Fortification Engineering", "Fort +8%, infantry +5%",
-                  fortification_mult=1.08, infantry_combat_mult=1.05),
-        TechBonus("Improved Armor Plate", "Armor +12%, fort +5%",
-                  armor_mult=1.12, fortification_mult=1.05),
-        TechBonus("Guided Munitions", "Artillery +15%, armor +8% (requires Electronics T3)",
-                  artillery_mult=1.15, armor_mult=1.08),
-    ],
-    TechBranch.DOCTRINE: [
-        TechBonus("Flexible Defense", "Org recovery +8%", org_recovery_mult=1.08),
-        TechBonus("Supply Corps Reform", "Supply efficiency +10%", supply_efficiency_mult=1.10),
-        TechBonus("Combined Arms Basics", "Combined arms +8%, planning +5%",
-                  combined_arms_mult=1.08, planning_speed_mult=1.05),
-        TechBonus("Deep Operations", "Planning +10%, combined arms +8%",
-                  planning_speed_mult=1.10, combined_arms_mult=1.08),
-        TechBonus("Total War Doctrine", "All military +10%, supply +8%",
-                  combined_arms_mult=1.10, supply_efficiency_mult=1.08, org_recovery_mult=1.05),
-    ],
+    TechBranch.INDUSTRY:        _INDUSTRY_TREE,
+    TechBranch.ELECTRONICS:     _ELECTRONICS_TREE,
+    TechBranch.NAVAL:           _NAVAL_TREE,
+    TechBranch.AIR:             _AIR_TREE,
+    TechBranch.LAND:            _LAND_TREE,
+    TechBranch.DOCTRINE:        _DOCTRINE_TREE,
+    TechBranch.NUCLEAR:         _NUCLEAR_TREE,
+    TechBranch.ROCKETRY:        _ROCKETRY_TREE,
+    TechBranch.CRYPTOGRAPHY:    _CRYPTOGRAPHY_TREE,
+    TechBranch.INFRASTRUCTURE:  _INFRASTRUCTURE_TREE,
 }
 
-# Prerequisites: {(branch, tier) -> [(required_branch, required_tier), ...]}
+# ═══════════════════════════════════════════════════════════════════════════ #
+# Prerequisites — cross-branch requirements create strategic dilemmas          #
+# {(branch, tier_index) -> [(required_branch, required_tier_index), ...]}     #
+# tier_index is 0-based: tier 0 = T1, tier 2 = T3, etc.                      #
+# ═══════════════════════════════════════════════════════════════════════════ #
 TECH_PREREQUISITES: Dict[Tuple[TechBranch, int], List[Tuple[TechBranch, int]]] = {
-    (TechBranch.INDUSTRY, 4):    [(TechBranch.ELECTRONICS, 2)],   # Nuclear Power needs Electronics T3
-    (TechBranch.NAVAL, 3):       [(TechBranch.ELECTRONICS, 1)],   # Advanced Sonar needs Electronics T2
-    (TechBranch.NAVAL, 4):       [(TechBranch.INDUSTRY, 3)],      # Nuclear Sub needs Industry T4
-    (TechBranch.AIR, 4):         [(TechBranch.INDUSTRY, 2)],      # Jet Propulsion needs Industry T3
-    (TechBranch.LAND, 4):        [(TechBranch.ELECTRONICS, 2)],   # Guided Munitions needs Electronics T3
+    # Nuclear T3 (Fission Weapon) needs Electronics T2 + Industry T3
+    (TechBranch.NUCLEAR, 2):        [(TechBranch.ELECTRONICS, 1), (TechBranch.INDUSTRY, 2)],
+    # Nuclear T5 (Miniaturized Warhead) needs Rocketry T3
+    (TechBranch.NUCLEAR, 4):        [(TechBranch.ROCKETRY, 2)],
+    # Rocketry T3 (Nike Ajax SAM) needs Electronics T2
+    (TechBranch.ROCKETRY, 2):       [(TechBranch.ELECTRONICS, 1)],
+    # Rocketry T5 (Thor IRBM) needs Nuclear T3
+    (TechBranch.ROCKETRY, 4):       [(TechBranch.NUCLEAR, 2)],
+    # Air T3 (Jet Engine) needs Industry T2
+    (TechBranch.AIR, 2):            [(TechBranch.INDUSTRY, 1)],
+    # Air T5 (Strategic Jet Bomber) needs Rocketry T1
+    (TechBranch.AIR, 4):            [(TechBranch.ROCKETRY, 0)],
+    # Naval T4 (Sonar) needs Electronics T2
+    (TechBranch.NAVAL, 3):          [(TechBranch.ELECTRONICS, 1)],
+    # Naval T5 (Nuclear Sub) needs Nuclear T2
+    (TechBranch.NAVAL, 4):          [(TechBranch.NUCLEAR, 1)],
+    # Land T5 (ATGM) needs Electronics T3 + Rocketry T2
+    (TechBranch.LAND, 4):           [(TechBranch.ELECTRONICS, 2), (TechBranch.ROCKETRY, 1)],
+    # Electronics T5 (Integrated Circuits) needs Industry T3
+    (TechBranch.ELECTRONICS, 4):    [(TechBranch.INDUSTRY, 2)],
+    # Industry T5 (Nuclear Power) needs Nuclear T2
+    (TechBranch.INDUSTRY, 4):       [(TechBranch.NUCLEAR, 1)],
+    # Infrastructure T4 (Highway) needs Industry T2
+    (TechBranch.INFRASTRUCTURE, 3): [(TechBranch.INDUSTRY, 1)],
+    # Doctrine T3 (Strategic Deception) needs Cryptography T2
+    (TechBranch.DOCTRINE, 2):       [(TechBranch.CRYPTOGRAPHY, 1)],
 }
 
 
@@ -352,6 +521,10 @@ def apply_research_action(
         "AIR": TechBranch.AIR,
         "LAND": TechBranch.LAND,
         "DOCTRINE": TechBranch.DOCTRINE,
+        "NUCLEAR": TechBranch.NUCLEAR,
+        "ROCKETRY": TechBranch.ROCKETRY,
+        "CRYPTOGRAPHY": TechBranch.CRYPTOGRAPHY,
+        "INFRASTRUCTURE": TechBranch.INFRASTRUCTURE,
     }
     branch = branch_map.get(branch_name.upper())
     if branch is None:

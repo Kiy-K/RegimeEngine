@@ -932,7 +932,7 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
     lines.append("  Budget: SET_BUDGET cat1 val1 cat2 val2... | ANTI_CORRUPTION")
     lines.append("  Manpower: TRAIN_MILITARY city count | CONSCRIPT city count | MOBILIZE_RESERVES city")
     lines.append("  Intel: PLANT_SPY city | CODE_BREAK | COUNTER_INTEL | DECEPTION city")
-    lines.append("  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE)")
+    lines.append("  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE/NUCLEAR/ROCKETRY/CRYPTOGRAPHY/INFRASTRUCTURE)")
     lines.append("  Invasion: PLAN_INVASION origin target zone | RECKLESS_INVASION origin target zone | AIRBORNE_INVASION target")
     # Show SUPPORT_BLF only to Eurasia when revolution is active
     if (faction_id == 1 and game.resistance and
@@ -1124,7 +1124,8 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
                 actions.append({"type": "continue_support_blf"})
 
             elif cmd == "RESEARCH":
-                _valid_branches = {"INDUSTRY", "ELECTRONICS", "NAVAL", "AIR", "LAND", "DOCTRINE"}
+                _valid_branches = {"INDUSTRY", "ELECTRONICS", "NAVAL", "AIR", "LAND", "DOCTRINE",
+                                   "NUCLEAR", "ROCKETRY", "CRYPTOGRAPHY", "INFRASTRUCTURE"}
                 branch = args[0].upper().strip(",:;.()") if args else "INDUSTRY"
                 if branch not in _valid_branches:
                     # Skip — LLM wrote garbage like "RESEARCH UNDERFUNDED"
@@ -1505,7 +1506,8 @@ YOUR GOVERNMENT: You receive weekly STATUS REPORTS from field commanders (naval,
 
 ⚠ CRITICAL — READ YOUR BRIEFING BEFORE ORDERING:
   - Check RESEARCH section: if it says "IN PROGRESS" for a branch, DO NOT research it again.
-  - RESEARCH only accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE. Nothing else.
+  - RESEARCH accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE, NUCLEAR, ROCKETRY, CRYPTOGRAPHY, INFRASTRUCTURE.
+  - Some branches have PREREQUISITES (e.g. Nuclear T3 needs Electronics T2 + Industry T3). Check available branches.
   - Check INVASION PLANS section: if an invasion to a target exists, DO NOT plan another one.
   - Check what you ordered LAST WEEK. Do not repeat orders already in progress.
   - Each wasted order is a week lost. Read the status. Act on NEW information only.
@@ -1565,7 +1567,7 @@ Actions:
   Economy: SET_MANUFACTURING 0-1 | BUILD_FACTORY type city | REPAIR_FACTORY city | ISSUE_WAR_BONDS city
   Manpower: TRAIN_MILITARY city count | CONSCRIPT city count | MOBILIZE_RESERVES city
   Intel: PLANT_SPY city | CODE_BREAK | COUNTER_INTEL | DECEPTION city
-  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE)
+  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE/NUCLEAR/ROCKETRY/CRYPTOGRAPHY/INFRASTRUCTURE)
   Invasion: PLAN_INVASION origin target zone | RECKLESS_INVASION origin target zone | AIRBORNE_INVASION target
   NOOP
 
@@ -1579,7 +1581,7 @@ SET_MANUFACTURING 0.8
 === EXAMPLE TURN 2 (mid game — defense + production + tech) ===
 LAY_MINES 1
 BUILD_FACTORY MIL_FACTORY Birmingham
-RESEARCH NAVAL"""
+RESEARCH CRYPTOGRAPHY"""
 
 
 EURASIA_SYSTEM_PROMPT = """You are Supreme Marshal Kalinin, Commander of Eurasia's Western Front. Each turn = 1 WEEK. Max 1536 tokens.
@@ -1592,7 +1594,8 @@ YOUR GOVERNMENT: Weekly status reports from fleet admirals, air marshals, army g
 
 ⚠ CRITICAL — READ YOUR BRIEFING BEFORE ORDERING:
   - Check RESEARCH section: if it says "IN PROGRESS" for a branch, DO NOT research it again.
-  - RESEARCH only accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE. Nothing else.
+  - RESEARCH accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE, NUCLEAR, ROCKETRY, CRYPTOGRAPHY, INFRASTRUCTURE.
+  - Some branches have PREREQUISITES (e.g. Nuclear T3 needs Electronics T2 + Industry T3). Check available branches.
   - Check INVASION PLANS section: if an invasion to a target exists, DO NOT plan another one.
   - Check what you ordered LAST WEEK. Do not repeat orders already in progress.
   - Each wasted order is a week lost. Read the status. Act on NEW information only.
@@ -1650,7 +1653,7 @@ Actions:
   Economy: SET_MANUFACTURING 0-1 | BUILD_FACTORY type city | REPAIR_FACTORY city | ISSUE_WAR_BONDS city
   Manpower: TRAIN_MILITARY city count | CONSCRIPT city count | MOBILIZE_RESERVES city
   Intel: PLANT_SPY city | CODE_BREAK | COUNTER_INTEL | DECEPTION city
-  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE)
+  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE/NUCLEAR/ROCKETRY/CRYPTOGRAPHY/INFRASTRUCTURE)
   Invasion: PLAN_INVASION origin target zone | RECKLESS_INVASION origin target zone | AIRBORNE_INVASION target
   NOOP
 
@@ -1664,6 +1667,7 @@ PLANT_SPY London
 === EXAMPLE TURN 2 (mid game — pressure + factory building) ===
 STRATEGIC_BOMB Dover
 BUILD_FACTORY DOCKYARD Antwerp
+RESEARCH ROCKETRY
 BUILD_SHIP TRANSPORT"""
 
 
