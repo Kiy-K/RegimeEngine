@@ -805,16 +805,37 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
     if air_status:
         lines.append(f"  Air control: {', '.join(air_status[:6])}")
 
-    # ── Invasions ─────────────────────────────────────────────────────── #
-    active_inv = [inv for inv in game.invasions if inv.is_active]
-    if active_inv:
+    # ── Invasions (show ALL own plans so LLM doesn't re-plan) ────────── #
+    my_inv = [inv for inv in game.invasions if inv.is_active and inv.faction_id == faction_id]
+    enemy_inv = [inv for inv in game.invasions if inv.is_active and inv.faction_id != faction_id and inv.detected_by_enemy]
+    if my_inv or enemy_inv:
         lines.append("")
-        lines.append("INVASIONS:")
-        for inv in active_inv:
-            origin = game.cluster_names[inv.origin_cluster] if inv.origin_cluster < len(game.cluster_names) else f"C{inv.origin_cluster}"
+        lines.append("YOUR INVASION PLANS (DO NOT re-plan these — they are already queued):")
+        for inv in my_inv:
+            origin = game.cluster_names[inv.origin_cluster] if 0 <= inv.origin_cluster < len(game.cluster_names) else "air bases"
             target = game.cluster_names[inv.target_cluster] if inv.target_cluster < len(game.cluster_names) else f"C{inv.target_cluster}"
-            side = "YOUR" if inv.faction_id == faction_id else "ENEMY"
-            lines.append(f"  {side}: {origin} → {target} [{inv.phase.name}] strength={inv.beachhead_strength:.0%}")
+            inv_label = inv.invasion_type.name if hasattr(inv, 'invasion_type') else "PREPARED"
+            if inv.phase.name == "PLANNING":
+                left = inv.planning_steps_required - inv.planning_steps_done
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [PLANNING {inv.planning_steps_done}/{inv.planning_steps_required}, {left} turns left]")
+            elif inv.phase.name == "ASSEMBLY":
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [ASSEMBLY {inv.assembly_steps_done}/{inv.assembly_steps_required}]")
+            elif inv.phase.name == "CROSSING":
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [CROSSING — fleet in transit]")
+            elif inv.phase.name == "BEACH_ASSAULT":
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [BEACH ASSAULT — strength {inv.beachhead_strength:.0%}]")
+            elif inv.phase.name == "BEACHHEAD":
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [BEACHHEAD ESTABLISHED — strength {inv.beachhead_strength:.0%}]")
+            else:
+                lines.append(f"  #{inv.invasion_id} {inv_label}: {origin} → {target} [{inv.phase.name}]")
+        if enemy_inv:
+            lines.append("  ENEMY DETECTED:")
+            for inv in enemy_inv:
+                target = game.cluster_names[inv.target_cluster] if inv.target_cluster < len(game.cluster_names) else f"C{inv.target_cluster}"
+                lines.append(f"  ⚠ Enemy invasion targeting {target} [{inv.phase.name}]")
+    else:
+        lines.append("")
+        lines.append("INVASION PLANS: None active. Use PLAN_INVASION to begin.")
 
     # ── BLF Resistance ─────────────────────────────────────────────────── #
     if game.resistance is not None and game.resistance.escalation.value > 0:
@@ -1083,8 +1104,13 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
                 actions.append({"type": "continue_support_blf"})
 
             elif cmd == "RESEARCH":
-                branch = args[0].upper() if args else "INDUSTRY"
-                actions.append({"type": "research", "branch": branch})
+                _valid_branches = {"INDUSTRY", "ELECTRONICS", "NAVAL", "AIR", "LAND", "DOCTRINE"}
+                branch = args[0].upper().strip(",:;.()") if args else "INDUSTRY"
+                if branch not in _valid_branches:
+                    # Skip — LLM wrote garbage like "RESEARCH UNDERFUNDED"
+                    pass
+                else:
+                    actions.append({"type": "research", "branch": branch})
 
             elif cmd in ("SET_BUDGET", "BUDGET"):
                 # Parse: SET_BUDGET MILITARY 0.35 PRODUCTION 0.20 ...
@@ -1202,6 +1228,15 @@ def apply_actions(game: GameState, faction_id: int, actions: List[Dict[str, Any]
             inv_type_str = act.get("inv_type", "prepared")
             inv_type_map = {"prepared": InvasionType.PREPARED, "reckless": InvasionType.RECKLESS, "airborne": InvasionType.AIRBORNE}
             inv_type = inv_type_map.get(inv_type_str, InvasionType.PREPARED)
+
+            # Deduplication: reject if already planning/executing invasion to same target
+            existing = [inv for inv in game.invasions
+                        if inv.is_active and inv.faction_id == faction_id
+                        and inv.target_cluster == act["target"]]
+            if existing:
+                target_name = game.cluster_names[act["target"]] if act["target"] < len(game.cluster_names) else f"C{act['target']}"
+                results.append(f"Invasion to {target_name} already in progress (#{existing[0].invasion_id}, {existing[0].phase.name}). DO NOT re-plan.")
+                continue
 
             # Set planning time based on type
             if inv_type == InvasionType.RECKLESS:
@@ -1442,6 +1477,13 @@ YOUR GOVERNMENT: You receive weekly STATUS REPORTS from field commanders (naval,
   Corruption eats your budget. Bureaucracy delays major policy changes.
   Your job: issue 3 strategic orders per week. Units report back next week.
 
+⚠ CRITICAL — READ YOUR BRIEFING BEFORE ORDERING:
+  - Check RESEARCH section: if it says "IN PROGRESS" for a branch, DO NOT research it again.
+  - RESEARCH only accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE. Nothing else.
+  - Check INVASION PLANS section: if an invasion to a target exists, DO NOT plan another one.
+  - Check what you ordered LAST WEEK. Do not repeat orders already in progress.
+  - Each wasted order is a week lost. Read the status. Act on NEW information only.
+
 YOUR TERRITORY (18 sectors — All British Isles):
   SOUTH (Channel front): London(0), Dover(1), Portsmouth(2), Southampton(3), Canterbury(4), Brighton(5)
   SOUTHWEST+WALES: Bristol(6), Plymouth(7) naval base, Cardiff(8) coal+steel
@@ -1521,6 +1563,13 @@ YOUR GOVERNMENT: Weekly status reports from fleet admirals, air marshals, army g
   Budget controls resource flow. Research unlocks capabilities. Corruption is endemic.
   The Revolution demands efficiency — but committees slow everything down.
   Issue 3 strategic orders per week.
+
+⚠ CRITICAL — READ YOUR BRIEFING BEFORE ORDERING:
+  - Check RESEARCH section: if it says "IN PROGRESS" for a branch, DO NOT research it again.
+  - RESEARCH only accepts: INDUSTRY, ELECTRONICS, NAVAL, AIR, LAND, DOCTRINE. Nothing else.
+  - Check INVASION PLANS section: if an invasion to a target exists, DO NOT plan another one.
+  - Check what you ordered LAST WEEK. Do not repeat orders already in progress.
+  - Each wasted order is a week lost. Read the status. Act on NEW information only.
 
 YOUR TERRITORY (14 sectors):
   CHANNEL: Calais(18) staging, Dunkirk(19) fleet, Le_Havre(20) Normandy, Cherbourg(21) sub base
@@ -1940,73 +1989,157 @@ def generate_visible_events(game: GameState, feedback: Dict[str, Any]) -> str:
     """
     Extract only the publicly visible events from a turn for the war correspondent.
     No classified intel — only what a journalist on the ground could see/hear.
+    Rich detail to prevent LLM hallucination — every event is grounded in game state.
     """
     events = []
 
-    # Visible: bombing raids (everyone can see/hear bombers)
+    # ── Air combat (everyone can see/hear bombers and dogfights) ────── #
     air_fb = feedback.get("air", {})
     if air_fb.get("air_battles", 0) > 0:
-        events.append("Dogfights observed over the Channel. Contrails criss-cross the sky.")
+        n = air_fb["air_battles"]
+        if n >= 3:
+            events.append("Massive air battle over the Channel — dozens of contrails, smoke trails spiraling into the sea.")
+        elif n >= 2:
+            events.append("Dogfights observed over the Channel. Contrails criss-cross the sky. A burning plane falls into the waves.")
+        else:
+            events.append("A lone dogfight above the white cliffs. One aircraft trailing smoke, limping home.")
     if air_fb.get("bombing_damage", 0) > 0.5:
-        events.append("Heavy bombing reported. Fires visible on the horizon.")
+        if air_fb["bombing_damage"] > 2.0:
+            events.append("Devastating bombing raid. Entire blocks ablaze. The fire brigade is overwhelmed.")
+        else:
+            events.append("Heavy bombing reported. Fires visible on the horizon. Ambulances race through cratered streets.")
+    if air_fb.get("squadrons_lost", 0) > 0:
+        events.append(f"Empty chairs in the officers' mess tonight — {int(air_fb['squadrons_lost'])} squadron(s) did not return.")
 
-    # Visible: naval battles (shore observers, survivors)
+    # ── Naval combat (shore observers, survivors, wreckage) ────────── #
     nav_fb = feedback.get("naval", {})
     if nav_fb.get("total_battles", 0) > 0:
-        events.append("Naval gunfire heard from the Channel. Flashes visible at night.")
+        if nav_fb["total_battles"] >= 3:
+            events.append("Thunder of naval guns echoes across the Channel all day. The horizon flickers with explosions.")
+        else:
+            events.append("Naval gunfire heard from the Channel. Flashes visible at night.")
     if nav_fb.get("ships_sunk", 0) > 0:
         sunk = int(nav_fb["ships_sunk"])
-        events.append(f"Wreckage and oil slicks spotted — reports of {sunk} ship(s) lost.")
+        if sunk >= 5:
+            events.append(f"Catastrophic losses at sea — wreckage of {sunk} ships. Oil slicks stretching for miles. Survivors pulled from the water.")
+        elif sunk >= 2:
+            events.append(f"Wreckage and oil slicks spotted — reports of {sunk} ship(s) lost. Lifeboats seen drifting.")
+        else:
+            events.append("A ship lost at sea. Oil and debris washing ashore. The crew's fate unknown.")
+    if nav_fb.get("mines_hit", 0) > 0:
+        events.append("An explosion in the shipping lane — a mine. The harbor entrance is closed for sweeping.")
 
-    # Visible: rocket bombs on London (always visible to proles)
+    # ── Rocket bombs on London (always visible to proles) ──────────── #
     london_hazard = game.cluster_data[0, 1] if len(game.cluster_data) > 0 else 0
-    if london_hazard > 0.2:
-        events.append("Rocket bombs struck London overnight. Victory Mansions shook. Proles queue for rations.")
+    if london_hazard > 0.4:
+        events.append("Rocket bombs struck London through the night. Victory Mansions shook. Crater in the Strand. A prole woman digs through rubble for her child.")
+    elif london_hazard > 0.2:
+        events.append("Rocket bombs struck London overnight. Windows blown out on Airstrip One Road. Proles queue for rations in the cold.")
 
-    # Visible: troop movements (large convoys on roads)
+    # ── City conditions (food, morale, damage) ─────────────────────── #
+    for cid, owner in game.cluster_owners.items():
+        if cid >= len(game.cluster_data) or cid >= len(game.cluster_names):
+            continue
+        name = game.cluster_names[cid]
+        d = game.cluster_data[cid]
+        stability = d[0]
+
+        # Starving cities
+        if stability < 0.3 and owner == 0:
+            events.append(f"Food riots in {name}. Proles overturn a ration cart. Thought Police fire warning shots.")
+            break
+        elif stability < 0.4 and owner == 0:
+            events.append(f"Long queues outside the Victory Stores in {name}. Rations cut again. Faces grey with hunger.")
+            break
+
+    # ── Troop movements (large convoys on roads) ──────────────────── #
+    troop_events = []
     for cid, owner in game.cluster_owners.items():
         if cid < len(game.cluster_data) and game.cluster_data[cid, 3] > 0.6:
             name = game.cluster_names[cid] if cid < len(game.cluster_names) else f"Sector {cid}"
             side = game.faction_names.get(owner, "Unknown")
-            events.append(f"Heavy military traffic observed near {name} ({side} forces).")
-            break  # only report one to keep it short
+            troop_events.append(f"Heavy military traffic observed near {name} ({side} forces).")
+    if troop_events:
+        events.append(troop_events[0])
+        if len(troop_events) > 2:
+            events.append("Military convoys spotted on multiple roads. Something is being prepared.")
 
-    # Visible: factory activity (smoke, noise)
+    # ── Factory activity (smoke, noise, strikes) ──────────────────── #
+    factory_events = []
     for ce in game.war_economy.cluster_economies:
-        if game.cluster_owners.get(ce.cluster_id) is not None:
-            name = game.cluster_names[ce.cluster_id] if ce.cluster_id < len(game.cluster_names) else f"C{ce.cluster_id}"
-            if ce.war_bond_active:
-                events.append(f"Factories in {name} running triple shifts. Workers exhausted but productive.")
+        if game.cluster_owners.get(ce.cluster_id) is None:
+            continue
+        name = game.cluster_names[ce.cluster_id] if ce.cluster_id < len(game.cluster_names) else f"C{ce.cluster_id}"
+        if ce.war_bond_active:
+            factory_events.append(f"Factories in {name} running triple shifts. Workers exhausted but productive.")
+        # Check for resource shortages
+        for r in [Resource.FUEL, Resource.STEEL, Resource.PROCESSED_FOOD]:
+            if ce.stockpile_ratio(r) < 0.1:
+                if r == Resource.FUEL:
+                    factory_events.append(f"Fuel shortage in {name}. Vehicles idle. The army requisitions civilian petrol.")
+                elif r == Resource.STEEL:
+                    factory_events.append(f"Steel shortage in {name}. The shipyard workers sit idle, smoking, waiting.")
+                elif r == Resource.PROCESSED_FOOD:
+                    factory_events.append(f"Food stores nearly empty in {name}. The canteen serves thin gruel.")
                 break
+    for fe in factory_events[:2]:
+        events.append(fe)
 
-    # Visible: sea state (Channel weather)
+    # ── Sea state (Channel weather — detailed) ────────────────────── #
     if game.naval.sea_zones:
         ss = game.naval.sea_zones[0].sea_state
-        if ss > 0.6:
-            events.append("Gale-force winds in the Dover Strait. All Channel crossings suspended.")
+        if ss > 0.8:
+            events.append("Hurricane-force winds in the Dover Strait. The sea is a wall of grey. All shipping halted.")
+        elif ss > 0.6:
+            events.append("Gale-force winds in the Dover Strait. Waves crash over the harbor wall. All Channel crossings suspended.")
+        elif ss > 0.4:
+            events.append("Rough seas in the Channel. Fishing boats returning to port. The ferry service cancelled.")
         elif ss > 0.3:
-            events.append("Rough seas in the Channel. Fishing boats returning to port.")
+            events.append("Choppy seas in the Channel. Spray over the bow of every patrol boat.")
 
-    # Visible: active invasions (beachhead phase is very visible!)
+    # ── Minefield events ──────────────────────────────────────────── #
+    for zone in game.naval.sea_zones:
+        if zone.mines.density > 0.3:
+            events.append(f"WARNING: Dense minefield reported in {zone.name}. Neutral shipping diverted.")
+            break
+        elif zone.mines.density > 0.1:
+            events.append(f"Mine warning in {zone.name}. Minesweepers working under fire.")
+            break
+
+    # ── Invasion events (beachheads are VERY visible) ─────────────── #
     for inv in game.invasions:
-        if inv.phase.name == "BEACH_ASSAULT":
+        if inv.phase.name == "ASSEMBLY":
+            origin = game.cluster_names[inv.origin_cluster] if 0 <= inv.origin_cluster < len(game.cluster_names) else "a port"
+            events.append(f"Unusual concentration of transport ships at {origin}. Troops embarking. Something big is coming.")
+        elif inv.phase.name == "CROSSING":
+            events.append("BREAKING: A massive fleet spotted crossing the Channel under escort. Invasion fleet!")
+        elif inv.phase.name == "BEACH_ASSAULT":
             target = game.cluster_names[inv.target_cluster] if inv.target_cluster < len(game.cluster_names) else "unknown beach"
-            events.append(f"BREAKING: Landing craft spotted off {target}! Amphibious assault underway!")
+            events.append(f"BREAKING: Landing craft spotted off {target}! Amphibious assault underway! Explosions on the beach!")
         elif inv.phase.name == "BEACHHEAD":
             target = game.cluster_names[inv.target_cluster] if inv.target_cluster < len(game.cluster_names) else "unknown location"
-            events.append(f"Beachhead reported at {target}. Supply ships moving under fire.")
+            strength = "strong" if inv.beachhead_strength > 0.5 else "tenuous"
+            events.append(f"Beachhead at {target} — {strength} foothold. Supply ships moving under fire. The battle rages.")
+        elif inv.phase.name == "AIRDROP":
+            target = game.cluster_names[inv.target_cluster] if inv.target_cluster < len(game.cluster_names) else "unknown"
+            events.append(f"BREAKING: Paratrooper drop over {target}! Hundreds of parachutes in the sky! Anti-aircraft fire!")
 
-    # Visible: BLF Resistance activity (graffiti, sabotage, broadcasts are PUBLIC)
+    # ── BLF Resistance activity (graffiti, sabotage, broadcasts are PUBLIC) ─ #
     if game.resistance is not None:
         blf = game.resistance
         if blf.escalation.value >= 1:
-            events.append("Graffiti on the Ministry walls: 'DOWN WITH BB'. Thought Police patrols doubled.")
+            if blf.total_members > 200:
+                events.append("Graffiti everywhere: 'DOWN WITH BB', 'WE ARE THE 85%'. Thought Police overwhelmed.")
+            else:
+                events.append("Graffiti on the Ministry walls: 'DOWN WITH BB'. Thought Police patrols doubled.")
         if blf.escalation.value >= 2:
-            events.append("Southampton factories report 'equipment malfunctions'. Production slowing.")
+            events.append("Southampton factories report 'equipment malfunctions'. Production slowing. A foreman found dead.")
         if blf.escalation.value >= 3:
-            events.append("A pirate signal hijacks the telescreen: a man's voice — calm, defiant — 'We are the 85%.'")
+            events.append("A pirate signal hijacks the telescreen: a man's voice — calm, defiant — 'We are the 85%. Two plus two equals four.'")
         if blf.escalation.value >= 4:
             events.append("BREAKING: Barricades in Southwark! Proles armed with stolen rifles. The Ghost of London speaks from the rubble.")
+        if blf.escalation.value >= 5:
+            events.append("FULL REVOLUTION: London burns. Prole militias hold the docks. The Party retreats to Whitehall. Big Brother's image flickers on broken telescreens.")
         # Winston capture is a MASSIVE public event — telescreens broadcast it
         if blf.winston.is_captured and blf.events_this_turn:
             for evt in blf.events_this_turn:
@@ -2015,27 +2148,96 @@ def generate_visible_events(game: GameState, feedback: Dict[str, Any]) -> str:
                     break
         # Winston-specific events the public would witness
         for evt in blf.events_this_turn:
-            if "BROADCAST" in evt or "REVOLT" in evt or "Barricades" in evt:
+            if "BROADCAST" in evt:
+                events.append("The telescreen flickers — a pirate broadcast. Winston's voice: 'Freedom is the freedom to say that two plus two make four.'")
+                break
+            elif "REVOLT" in evt or "Barricades" in evt:
                 events.append(evt[:150])
                 break
+            elif "SABOTAGE" in evt:
+                events.append("An explosion at a munitions factory. 'Accident,' says the Ministry. Nobody believes it.")
+                break
+            elif "ARMS" in evt:
+                events.append("Reports of a raid on a military depot. Weapons missing. The Thought Police are furious.")
+                break
 
-    # Visible: propaganda (Two Minutes Hate, etc.)
+    # ── Population / morale events ────────────────────────────────── #
+    if game.pop is not None:
+        for cid, owner in game.cluster_owners.items():
+            if owner != 0 or cid >= len(game.cluster_names):
+                continue
+            # Use pop data if available for specific city events
+            if cid < len(game.pop.clusters):
+                pc = game.pop.clusters[cid]
+                name = game.cluster_names[cid]
+                if hasattr(pc, 'unemployment_rate') and pc.unemployment_rate > 0.3:
+                    events.append(f"Unemployment queues stretch around the block in {name}. 'The war will end soon,' mutters a prole. Nobody agrees.")
+                    break
+
+    # ── Governance events (corruption, bureaucracy visible effects) ── #
+    if game.governance is not None:
+        for fid in [0, 1]:
+            fb = game.governance.factions.get(fid)
+            if fb is None:
+                continue
+            if fb.corruption.effective_rate > 0.30:
+                if fid == 0:
+                    events.append("Black market thriving in London. Ration cards forged openly. Party officials look the other way — for a price.")
+                else:
+                    events.append("Reports from the continent: Eurasian commissars selling military supplies. Corruption endemic.")
+                break
+
+    # ── Research milestones (public when they affect daily life) ───── #
+    if game.research is not None:
+        for fid in [0, 1]:
+            fr = game.research.factions.get(fid)
+            if fr is None:
+                continue
+            for p in fr.active_projects:
+                if p.is_complete and p.progress_pct >= 0.99:
+                    if fid == 0:
+                        events.append(f"The Ministry of Plenty announces a 'scientific breakthrough' in {p.branch.name.lower()}. The telescreens celebrate.")
+                    else:
+                        events.append("Intelligence suggests Eurasia has achieved a technical advance. Their forces may be better equipped.")
+                    break
+
+    # ── Propaganda (Two Minutes Hate, announcements, etc.) ────────── #
     if game.turn % 10 == 0 and game.turn > 0:
-        events.append("The telescreen announces increased chocolate rations. War is Peace.")
+        events.append("The telescreen announces increased chocolate rations (from 30g to 25g). War is Peace.")
+    elif game.turn % 7 == 0:
+        events.append("Two Minutes Hate today featured Goldstein's face morphing into a Eurasian general. The proles screamed on cue.")
+    elif game.turn % 13 == 0:
+        events.append("A public hanging in Victory Square. 'Traitors to Ingsoc,' announces the telescreen. The crowd watches in silence.")
+    elif game.turn % 17 == 0:
+        events.append("The Ministry of Truth issues a correction: Oceania has always been at war with Eurasia. Always.")
+    elif game.turn % 23 == 0 and game.turn > 20:
+        events.append("A new poster of Big Brother on every wall. The eyes follow you. 'BIG BROTHER IS WATCHING YOU.'")
 
-    # Scores as vague public sentiment
+    # ── Scores as vague public sentiment ──────────────────────────── #
     score_diff = game.faction_scores.get(0, 0) - game.faction_scores.get(1, 0)
-    if abs(score_diff) > 50:
-        leading = "Oceania" if score_diff > 0 else "Eurasia"
-        events.append(f"Public morale in {leading} appears higher. Victory is proclaimed daily.")
+    if score_diff > 200:
+        events.append("Public confidence in Oceania soaring. The proles sing patriotic songs. Victory gin flows freely.")
+    elif score_diff > 50:
+        events.append("Public morale in Oceania appears higher. Victory is proclaimed daily.")
+    elif score_diff < -200:
+        events.append("Whispers of defeat in the queues. The telescreens blare louder. The Thought Police work overtime.")
+    elif score_diff < -50:
+        events.append("Uneasy mood in the streets. The telescreen promises victory but the queues grow longer.")
+
+    # ── Seasonal / atmospheric details ────────────────────────────── #
+    season_idx = (game.turn // 13) % 4
+    if season_idx == 1:  # winter
+        events.append("Cold fog off the Channel. The coal ration halved again. Proles huddle around shared fires.")
+    elif season_idx == 3 and game.turn % 5 == 0:  # summer
+        events.append("A rare warm day. Children play in the bomb craters. For a moment, almost normal.")
 
     if not events:
         events.append("A quiet day over the Channel. Smoke rises from distant factories. The telescreen hums. The war grinds on.")
 
     # Build the scene with turn context
-    season = ["autumn", "winter", "spring", "summer"][(game.turn // 25) % 4]
+    season = ["autumn", "winter", "spring", "summer"][season_idx]
     time_of_day = ["dawn", "morning", "afternoon", "night"][(game.turn % 4)]
-    return f"Turn {game.turn}. {season.title()}, {time_of_day}. " + " ".join(events[:8])
+    return f"Turn {game.turn}. {season.title()}, {time_of_day}. " + " ".join(events[:10])
 
 
 def format_commentary_prompt(visible_events: str) -> str:

@@ -397,27 +397,48 @@ def research_summary(world: ResearchWorld, faction_id: int) -> str:
 
     parts = []
 
-    # Tech levels
+    # Completed tech levels
     levels = []
     for branch in TechBranch:
         lvl = fr.current_level(branch)
         if lvl > 0:
             levels.append(f"{BRANCH_NAMES[branch]}:T{lvl}")
     if levels:
-        parts.append("Tech: " + ", ".join(levels))
+        parts.append("Completed: " + ", ".join(levels))
     else:
-        parts.append("Tech: None researched")
+        parts.append("Completed: None")
 
-    # Active projects
+    # Active projects — very explicit so LLMs don't re-research
     active = [p for p in fr.active_projects if not p.is_complete]
     if active:
         projs = []
         for p in active:
             bonus = TECH_TREE[p.branch][p.tier]
-            projs.append(f"{bonus.name}({p.progress_pct:.0%})")
-        parts.append("Researching: " + ", ".join(projs))
+            turns_left = p.required_turns - int(p.progress_pct * p.required_turns)
+            projs.append(f"{bonus.name} ({p.branch.name} T{p.tier+1}, {p.progress_pct:.0%}, ~{turns_left} turns left)")
+        parts.append("IN PROGRESS (DO NOT re-research these): " + ", ".join(projs))
     else:
-        slots = fr.max_simultaneous - len(active)
-        parts.append(f"Research: {slots} slot(s) FREE — use RESEARCH branch_name")
+        parts.append("IN PROGRESS: Nothing — research slot FREE")
+
+    # Free slots
+    used = len(active)
+    free = fr.max_simultaneous - used
+    if free > 0 and active:
+        # Show what branches are available
+        available = []
+        for branch in TechBranch:
+            ok, _ = fr.can_research(branch)
+            if ok:
+                lvl = fr.current_level(branch)
+                available.append(f"{branch.name}(→T{lvl+1})")
+        if available:
+            parts.append(f"{free} slot(s) FREE — available: {', '.join(available)}")
+    elif free > 0:
+        available = []
+        for branch in TechBranch:
+            ok, _ = fr.can_research(branch)
+            if ok:
+                available.append(branch.name)
+        parts.append(f"{free} slot(s) FREE — use RESEARCH {'/'.join(available) if available else '(none available)'}")
 
     return " | ".join(parts)
