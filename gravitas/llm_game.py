@@ -680,6 +680,23 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
             "london_contested": True,
         }
 
+    # 6c. Invasion beachheads → spawn attacker land units in target sector
+    if game.land is not None:
+        from extensions.military.cow_combat import CowUnitType, create_unit
+        for inv in game.invasions:
+            if inv.is_active and inv.phase.name == "BEACHHEAD" and not getattr(inv, '_land_spawned', False):
+                inv._land_spawned = True
+                target = inv.target_cluster
+                fid = inv.faction_id
+                # Spawn landing force: 2 infantry + 1 militia (small beachhead)
+                beach_units = [
+                    create_unit(CowUnitType.INFANTRY, 1, fid, target),
+                    create_unit(CowUnitType.INFANTRY, 1, fid, target),
+                    create_unit(CowUnitType.MILITIA, 1, fid, target),
+                ]
+                existing = game.land.garrisons.get(target, [])
+                game.land.garrisons[target] = existing + beach_units
+
     # 7. Land combat (resolve battles in contested sectors)
     if game.land is not None:
         game.land, land_fb = step_land(game.land, game.cluster_owners, rng, dt)
@@ -1661,12 +1678,12 @@ YOUR TERRITORY (18 sectors — All British Isles):
   SCOTLAND: Edinburgh(14) Forth anchorage, Glasgow(15) Clyde shipyards
   AIRSTRIP TWO (Ireland): Dublin(16) Atlantic Fleet, Belfast(17) H&W shipyards
 
-ENEMY TERRITORY (14 sectors):
+ENEMY TERRITORY (17 sectors):
   CHANNEL: Calais(18), Dunkirk(19), Le_Havre(20), Cherbourg(21)
   N FRANCE: Amiens(22), Rouen(23) steel, Lille(24)
-  BENELUX: Brussels(25), Antwerp(26) North Sea fleet
-  CENTRAL: Paris(27) HQ, Orleans(28), Lyon(29)
-  ATLANTIC: Brest(30) sub pens, Bordeaux(31)
+  BENELUX: Brussels(25), Antwerp(26), Rotterdam(27) North Sea Fleet, Amsterdam(28) trade, Luxembourg(29) steel
+  CENTRAL: Paris(30) HQ, Orleans(31), Lyon(32)
+  ATLANTIC: Brest(33) sub pens, Bordeaux(34)
 
 6 SEA ZONES:
   0=Dover Strait(33km) 1=W Channel(120km) 2=North Sea(500km)
@@ -1741,12 +1758,12 @@ YOUR GOVERNMENT: Weekly status reports from fleet admirals, air marshals, army g
   - Check what you ordered LAST WEEK. Do not repeat orders already in progress.
   - Each wasted order is a week lost. Read the status. Act on NEW information only.
 
-YOUR TERRITORY (14 sectors):
+YOUR TERRITORY (17 sectors):
   CHANNEL: Calais(18) staging, Dunkirk(19) fleet, Le_Havre(20) Normandy, Cherbourg(21) sub base
   N FRANCE: Amiens(22) rail hub, Rouen(23) steel mills, Lille(24) reserves
-  BENELUX: Brussels(25) Command, Antwerp(26) North Sea fleet
-  CENTRAL: Paris(27) HQ, Orleans(28) logistics, Lyon(29) industry
-  ATLANTIC: Brest(30) SUBMARINE PENS, Bordeaux(31) reserves
+  BENELUX: Brussels(25) Command, Antwerp(26) port, Rotterdam(27) NORTH SEA FLEET, Amsterdam(28) trade/finance, Luxembourg(29) steel
+  CENTRAL: Paris(30) HQ, Orleans(31) logistics, Lyon(32) industry
+  ATLANTIC: Brest(33) SUBMARINE PENS, Bordeaux(34) reserves
 
 ENEMY TERRITORY (18 sectors — All British Isles):
   SOUTH: London(0), Dover(1), Portsmouth(2), Southampton(3), Canterbury(4), Brighton(5)
