@@ -73,7 +73,7 @@ from extensions.pop.pop_v2 import (
     pop_summary, conscript as pop_conscript,
 )
 from extensions.research.research_system import (
-    ResearchWorld, initialize_research, step_research,
+    ResearchWorld, TechBranch, initialize_research, step_research,
     apply_research_action, research_summary,
 )
 from extensions.governance.budget_system import (
@@ -732,10 +732,34 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
         lines.append("")
         lines.append("BUDGET: " + governance_summary(game.governance, faction_id))
 
-    # ── Research (tech tree) ────────────────────────────────────────────── #
+    # ── Research (tech tree — 10 branches × 5 tiers) ───────────────────── #
     if game.research is not None:
         lines.append("")
         lines.append("RESEARCH: " + research_summary(game.research, faction_id))
+        # Show strategic capability alerts from completed techs
+        fr = game.research.factions.get(faction_id)
+        if fr:
+            caps = []
+            if fr.current_level(TechBranch.NUCLEAR) >= 3:
+                caps.append("☢ FISSION WEAPON AVAILABLE")
+            if fr.current_level(TechBranch.NUCLEAR) >= 4:
+                caps.append("☢☢ THERMONUCLEAR CAPABILITY")
+            if fr.current_level(TechBranch.ROCKETRY) >= 5:
+                caps.append("🚀 IRBM READY")
+            if fr.current_level(TechBranch.ROCKETRY) >= 3:
+                caps.append("SAM DEFENSE ACTIVE")
+            if fr.current_level(TechBranch.AIR) >= 3:
+                caps.append("JET FIGHTERS OPERATIONAL")
+            if fr.current_level(TechBranch.NAVAL) >= 5:
+                caps.append("NUCLEAR SUBMARINE FLEET")
+            if fr.current_level(TechBranch.CRYPTOGRAPHY) >= 2:
+                caps.append("ENIGMA BROKEN — reading enemy comms")
+            if caps:
+                lines.append("  CAPABILITIES: " + " | ".join(caps))
+            # Show recently completed techs (last 3 turns)
+            recent = [t for t in fr.completed_techs[-2:]] if fr.completed_techs else []
+            if recent:
+                lines.append(f"  RECENTLY COMPLETED: {', '.join(recent)}")
 
     # ── Economy (GDP + Factories) ─────────────────────────────────────── #
     if game.economy is not None:
