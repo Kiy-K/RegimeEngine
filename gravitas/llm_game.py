@@ -765,7 +765,7 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
 
     lines = []
     lines.append(f"=== WEEK {week}/{game.max_turns} | {month} {year} | {fname} ===")
-    lines.append(f"Score: You {game.faction_scores[faction_id]:.0f} vs {ename} {game.faction_scores[enemy_id]:.0f}")
+    lines.append(f"Score: You {int(game.faction_scores[faction_id]):,} vs {ename} {int(game.faction_scores[enemy_id]):,}")
 
     # ── Government & National Spirits ────────────────────────────────── #
     gov_name = game.government_types.get(faction_id, "Unknown")
@@ -1309,9 +1309,14 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
                 actions.append({"type": "anti_corruption"})
 
             elif cmd == "BUILD_FACTORY":
+                _VALID_FACTORIES = {"POWER_PLANT", "MIL_FACTORY", "CIVIL_FACTORY", "DOCKYARD",
+                                    "AIRFIELD", "STEEL_MILL", "REFINERY", "FARM", "HOSPITAL", "INFRASTRUCTURE"}
                 ftype = args[0].upper() if args else "MIL_FACTORY"
-                city = _city(args[1]) if len(args) > 1 else 0
-                actions.append({"type": "build_factory", "factory_type": ftype, "cluster": city})
+                if ftype not in _VALID_FACTORIES:
+                    pass  # skip invalid factory type
+                else:
+                    city = _city(args[1]) if len(args) > 1 else 0
+                    actions.append({"type": "build_factory", "factory_type": ftype, "cluster": city})
 
             elif cmd == "REPAIR_FACTORY":
                 city = _city(args[0]) if args else 0

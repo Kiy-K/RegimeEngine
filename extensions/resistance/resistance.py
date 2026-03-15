@@ -333,6 +333,13 @@ def step_resistance(
         # Propaganda boosts
         recruit_rate *= (1.0 + blf.propaganda_level)
 
+        # Leadership cascade: Winston captured = BLF crippled
+        if blf.winston.is_captured or not blf.winston.is_alive:
+            recruit_rate *= 0.4  # 60% reduction — leaderless movement stalls
+            # Morale decay for all cells when leaderless
+            for cell in blf.cells_in_cluster(cid):
+                cell.morale = max(0.1, cell.morale - 0.02 * dt)
+
         # Existing cells grow
         for cell in blf.cells_in_cluster(cid):
             if cell.status == CellStatus.ACTIVE:

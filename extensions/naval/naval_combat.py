@@ -85,8 +85,8 @@ def _lanchester_surface_kernel(
     def_init = 1.0 + 0.15 * max(0.0, -speed_adv)
 
     total = atk_power * atk_init + def_power * def_init + 0.01
-    atk_dmg = (atk_power * atk_init / total) * atk_power * 0.3 * dt
-    def_dmg = (def_power * def_init / total) * def_power * 0.3 * dt
+    atk_dmg = (atk_power * atk_init / total) * atk_power * 0.5 * dt
+    def_dmg = (def_power * def_init / total) * def_power * 0.5 * dt
 
     # Random factor encoded in rng_val (0.7-1.3 range)
     atk_dmg *= rng_val

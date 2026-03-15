@@ -253,6 +253,12 @@ def step_invasion(
             else:
                 plan.phase = InvasionPhase.ASSEMBLY
 
+        # Timeout: abort if planning takes 2× the required time (stuck/deadlocked)
+        if plan.planning_steps_done > plan.planning_steps_required * 2:
+            plan.phase = InvasionPhase.ABORTED
+            feedback["aborted"] = True
+            feedback["abort_reason"] = "Planning timeout — invasion cancelled after excessive delay."
+
         feedback["progress"] = plan.planning_steps_done / plan.planning_steps_required
 
     # ── ASSEMBLY ──────────────────────────────────────────────────────── #

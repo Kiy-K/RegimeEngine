@@ -348,6 +348,9 @@ def run_benchmark(args: argparse.Namespace) -> Dict:
         if not args.no_commentary:
             visible_text = generate_visible_events(game, feedback)
             commentary_prompt = format_commentary_prompt(visible_text)
+            # Rate limit: add 1s delay if last commentary was slow (429 likely)
+            if commentary_llm.latencies and commentary_llm.latencies[-1] > 12.0:
+                time.sleep(2.0)
             t0 = time.time()
             dispatch = commentary_llm.chat(COMMENTARY_SYSTEM_PROMPT, commentary_prompt)
             t_comm = time.time() - t0
