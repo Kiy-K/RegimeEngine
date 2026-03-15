@@ -4,7 +4,8 @@
 > The **Air Strip One scenario** uses separate naval and air force systems:
 > - **Naval**: `extensions/naval/` — 14 ship classes, 6 sea zones, Lanchester combat, 3 invasion types (PREPARED/RECKLESS/AIRBORNE)
 > - **Air Force**: `extensions/air_force/` — 10 aircraft types, 7 bases per side, air zone control
-> - **Manpower**: `extensions/war_economy/manpower.py` — 15 conscription laws, training pipeline
+> - **Land Combat**: `extensions/military/land_bridge.py` — Per-sector garrisons using CoW units, contested sector combat
+> - **Manpower**: `extensions/manpower/` — 15 conscription laws, training pipeline
 > - **Population**: `extensions/pop/pop_v2.py` — Real 1958 census numbers, 1984 social classes, 8 job types
 >
 > See [AIRSTRIP_ONE_SYSTEMS.md](AIRSTRIP_ONE_SYSTEMS.md) for the complete current military documentation.

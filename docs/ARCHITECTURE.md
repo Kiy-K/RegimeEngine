@@ -47,9 +47,21 @@ GRAVITAS Engine is organized into three layers: the **core simulation** (`gravit
 │   │ GDP model    │ │ 1984 classes│ │ espionage    │        │
 │   ├──────────────┤ ├─────────────┤ ├──────────────┤        │
 │   │ research/    │ │ governance/ │ │ war_economy/ │        │
-│   │ 6×5 tech tree│ │ budget+corr │ │ legacy model │        │
-│   │ prerequisites│ │ bureaucracy │ │              │        │
+│   │ 10×5 tech tree│ │ budget+corr │ │ legacy model │        │
+│   │ 50 techs     │ │ bureaucracy │ │              │        │
+│   │ 13 prereqs   │ │             │ │              │        │
+│   ├──────────────┤ ├─────────────┤ ├──────────────┤        │
+│   │ military/    │ │ manpower/   │ │ audits/      │        │
+│   │ land combat  │ │ 15 conscrip │ │ system audit │        │
+│   │ 30+ units    │ │ training    │ │              │        │
 │   └──────────────┘ └─────────────┘ └──────────────┘        │
+│                                                          │
+│   ┌─────────────────────────────────────────────────────┐ │
+│   │ GUI Layer (gui/)                                    │ │
+│   │ main.py — Real-time strategic map viewer             │ │
+│   │ generate_map.py — Geographic asset generation       │ │
+│   │ assets/ — Map images, sector positions              │ │
+│   └─────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,6 +113,18 @@ Optional wrappers that add military and population modeling on top of the core s
 ### Population Extension (`extensions/pop/`)
 
 - **`PopWrapper`** — Adds multi-class demographics, ethnic tension, and Soldier archetype with morale/conscription/desertion dynamics.
+
+### Land Combat Extension (`extensions/military/`)
+
+- **`land_bridge.py`** — Per-sector land garrisons using CoW combat system (30+ unit types). Resolves combat in contested sectors each turn. Spawns beachhead units for successful invasions.
+
+### Manpower Extension (`extensions/manpower/`)
+
+- **`manpower.py`** — Conscription system with 15 laws, training pipeline, and recruitment from population pools.
+
+### Audits Extension (`extensions/audits/`)
+
+- **`system.py`** — System integrity checks and validation utilities.
 
 ## Orchestration Layer
 
@@ -212,6 +236,43 @@ Plugins are standalone modules that:
 - **Configurability**: Tune parameters via YAML without retraining.
 - **Testability**: Test each mechanic in isolation.
 - **Extensibility**: Add new historical mechanics (weather, logistics, morale events) as plugins.
+
+---
+
+## GUI Layer
+
+**Package**: `gui/`
+
+Real-time strategic map visualization for the Air Strip One scenario.
+
+### `main.py` — Strategic Map GUI
+
+A Pygame-based real-time viewer showing:
+- **35-sector map** with real geographic positions
+- **6 sea zones** with fleet positions
+- **Land garrisons** and contested sectors
+- **BLF resistance** activity levels
+- **Faction scores** and military forces
+- **War correspondent** dispatches
+- **Interactive controls**: pause/play, speed, sector selection
+
+### `generate_map.py` — Asset Generation
+
+Generates map assets from Natural Earth geographic data:
+- **Western Europe map** with sector boundaries
+- **Sector positions** mapped from real coordinates
+- **Sea zone centers** for fleet indicators
+
+### Controls
+
+- **SPACE** — Pause/Resume auto-play
+- **N** — Next turn (when paused)
+- **+/-** — Speed up/slow down
+- **S** — Toggle sector names
+- **F** — Toggle fleet display
+- **ESC/Q** — Quit
+
+---
 
 ## Key Design Decisions
 

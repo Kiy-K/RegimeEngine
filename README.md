@@ -8,14 +8,16 @@ High-fidelity simulation and optimization of hierarchical political systems, adv
 
 GRAVITAS Engine is a research-grade simulation framework for modeling the dynamics of political regimes, military campaigns, and systemic collapse. It combines non-linear ODE dynamics, Hawkes shock processes, media bias modeling, population demographics, and a full economic subsystem into a unified Gymnasium environment.
 
-The engine supports both **single-agent governance** (PPO stabilization) and **multi-agent adversarial warfare** (RecurrentPPO self-play), with a modular **plugin system** for extending simulation mechanics.
+The engine supports both **single-agent governance** (PPO stabilization) and **multi-agent adversarial warfare** (RecurrentPPO self-play), with a modular **plugin system** for extending simulation mechanics. It now includes a **real-time strategic map GUI** for visualizing the Air Strip One 1984 scenario.
 
 ## Key Features
 
-- **CoW-Native Military System**: Full Call of War-style combat with 34 unit types, terrain bonuses, morale dynamics, and physics integration.
+- **CoW-Native Military System**: Full Call of War-style combat with 34 unit types, terrain bonuses, morale dynamics, physics integration, and per-sector land garrisons.
 - **Physics-Driven Simulation**: Realistic terrain, weather, supply logistics, and line-of-sight modeling integrated with combat mechanics.
 - **Advanced Unit Traits**: Elite units, terrain specialization, weather adaptation, engineering capabilities, and combat specials (suppression, breakthrough, ambush).
 - **Multi-Agent Warfare**: Adversarial Axis vs. Soviet self-play with per-side observations, actions, and rewards (Battle of Moscow scenario).
+- **Air Strip One 1984**: Three-faction strategic simulation across 35 sectors (British Isles, France, Benelux, Netherlands) with LLM-driven AI players.
+- **Real-Time GUI**: Interactive strategic map viewer with fleet positions, land garrisons, BLF resistance, and war correspondent dispatches.
 - **Plugin Architecture**: Modular, hot-pluggable simulation extensions with standardized `on_step(world, turn)` interface.
 - **Historical Scenarios**: YAML-defined scenarios (Moscow 1941 with 9 sectors, detailed terrain, winter attrition, partisan warfare).
 - **Hierarchical Modeling**: Districts nested within provinces, with custom adjacency and diffusion rates.
@@ -36,9 +38,12 @@ GravitasEngine/
 │   │   ├── __init__.py          # GravitasPlugin base class + discovery
 │   │   ├── soviet_reinforcements.py  # Volga barge crossing mechanic
 │   │   └── axis_airlift.py      # Luftwaffe airlift mechanic
-│   └── scenarios/               # Scenario YAML files
-│       ├── moscow.yaml          # 9-sector Battle of Moscow (NEW)
-│       └── stalingrad.yaml      # 9-sector Battle of Stalingrad
+│   ├── scenarios/               # Scenario YAML files
+│   │   ├── moscow.yaml          # 9-sector Battle of Moscow (NEW)
+│   │   ├── stalingrad.yaml      # 9-sector Battle of Stalingrad
+│   │   └── airstrip_one.yaml    # 35-sector 1984 scenario
+│   ├── llm_game.py              # Air Strip One LLM game engine
+│   └── weather_bridge.py        # Weather system integration
 ├── gravitas_engine/             # Core simulation engine
 │   ├── core/                    # State, params, integrator
 │   ├── agents/                  # Environments (GravitasEnv, StalingradMA)
@@ -47,18 +52,35 @@ GravitasEngine/
 ├── extensions/                  # Military wrapper, political interface
 │   ├── military/                # CoW-native military system (NEW)
 │   │   ├── cow_combat.py        # 34 unit types, traits, combat resolution
+│   │   ├── land_bridge.py      # Per-sector land garrisons
 │   │   ├── military_dynamics.py # Combat, production, research, morale
 │   │   ├── military_state.py    # State dataclasses
 │   │   ├── military_wrapper.py   # Gymnasium environment
 │   │   ├── physics.py           # Physics engine (terrain, weather, supply)
 │   │   ├── physics_bridge.py    # Integration layer
 │   │   └── unit_types.py        # Legacy unit type mappings
-│   └── pop/                     # Population dynamics
+│   ├── economy_v2/              # New economy system (GDP, factories)
+│   ├── pop/                     # Population dynamics
+│   ├── research/                # 10×5 tech tree system
+│   ├── governance/              # Budget, corruption, bureaucracy
+│   ├── resistance/              # BLF resistance system
+│   ├── naval/                   # Naval warfare, 6 sea zones
+│   ├── air_force/               # Air operations, 10 aircraft types
+│   ├── intelligence/            # Espionage, fog of war
+│   ├── war_economy/             # Legacy resource model
+│   ├── manpower/                # Conscription system
+│   └── audits/                  # System validation
+├── gui/                         # Real-time strategic map GUI
+│   ├── main.py                  # Pygame-based map viewer
+│   ├── generate_map.py          # Geographic asset generation
+│   ├── assets/                  # Map images, sector positions
+│   └── __init__.py              # GUI package
 ├── configs/                     # Unified YAML configuration
 │   ├── custom.yaml              # Plugin + scenario config
 │   └── moscow.yaml              # Moscow scenario with physics config
 ├── cli.py                       # CLI entry point
 ├── tests/                       # Training, evaluation, replay scripts
+│   ├── benchmark_llm.py        # LLM benchmark for Air Strip One
 │   └── train_moscow_selfplay.py # Moscow self-play training (NEW)
 └── docs/                        # Documentation
 ```
@@ -114,6 +136,21 @@ results = engine.run(episodes=30)
 # Access environment directly
 env = engine.env
 obs = env.reset(seed=0)
+```
+
+### Air Strip One 1984 (LLM-Driven)
+
+```bash
+# Run 100-week game with AI players
+python tests/benchmark_llm.py \
+    --oceania-model claude-haiku-4-5-20251001 \
+    --eurasia-model claude-haiku-4-5-20251001 \
+    --winston-model claude-haiku-4-5-20251001 \
+    --commentary-model mistral-medium-latest \
+    --turns 100 --seed 451
+
+# Real-time GUI visualization
+.venv/bin/python gui/main.py --seed 451 --turns 100 --speed 1.0
 ```
 
 ### Single-Agent Training
@@ -245,12 +282,14 @@ The flagship scenario simulates the decisive Eastern Front battle (Oct 1941 – 
 
 ## Documentation
 
-- [Moscow Scenario](docs/MOSCOW_SCENARIO.md) — Full scenario documentation with physics integration.
-- [Military System Guide](docs/MILITARY_SYSTEM.md) — CoW-native combat, unit types, and traits.
-- [Physics Integration](docs/PHYSICS_INTEGRATION.md) — Terrain, weather, and supply modeling.
-- [Plugin System Guide](docs/PLUGIN_SYSTEM.md) — Writing and configuring plugins.
-- [Stalingrad Scenario](docs/STALINGRAD_SCENARIO.md) — Legacy scenario documentation.
-- [Architecture Overview](docs/ARCHITECTURE.md) — Engine internals and design.
+- [Air Strip One Scenario](docs/AIRSTRIP_ONE.md) — 35-sector 1984 strategic simulation
+- [Systems Documentation](docs/AIRSTRIP_ONE_SYSTEMS.md) — Complete 13-system technical reference
+- [Architecture Overview](docs/ARCHITECTURE.md) — Engine internals and design
+- [GUI Documentation](docs/GUI.md) — Real-time strategic map viewer
+- [Military System Guide](docs/MILITARY_SYSTEM.md) — CoW-native combat, unit types, and traits
+- [Physics Integration](docs/PHYSICS_INTEGRATION.md) — Terrain, weather, and supply modeling
+- [Plugin System Guide](docs/PLUGIN_SYSTEM.md) — Writing and configuring plugins
+- [Stalingrad Scenario](docs/STALINGRAD_SCENARIO.md) — Legacy scenario documentation
 
 ## Population + Military Modeling
 

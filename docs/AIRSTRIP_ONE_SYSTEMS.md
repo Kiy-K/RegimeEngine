@@ -4,11 +4,11 @@
 
 **GRAVITAS Engine: Air Strip One** is a strategic war simulation set in George Orwell's 1984 universe. Three AI players (Oceania, Eurasia, Winston Smith / BLF resistance) compete in a turn-based game where each turn represents **1 week** of in-game time. A fourth LLM provides war correspondent narrative commentary.
 
-The simulation integrates 12 interconnected systems across a 32-sector map covering all of the British Isles and Central France.
+The simulation integrates 13 interconnected systems across a 35-sector map covering all of the British Isles, France, Benelux, and Netherlands.
 
 ---
 
-## 1. Map — 32 Sectors, 6 Sea Zones
+## 1. Map — 35 Sectors, 6 Sea Zones
 
 ### Oceania (18 sectors — All British Isles)
 
@@ -33,7 +33,7 @@ The simulation integrates 12 interconnected systems across a 32-sector map cover
 | 16 | Dublin | 650K | Port City | Airstrip Two capital, Atlantic Fleet |
 | 17 | Belfast | 440K | Naval Base | Harland & Wolff shipyards |
 
-### Eurasia (14 sectors — France + Benelux)
+### Eurasia (17 sectors — France + Benelux + Netherlands)
 
 | ID | City | Pop (1958) | Role | Key Assets |
 |----|------|-----------|------|------------|
@@ -46,11 +46,14 @@ The simulation integrates 12 interconnected systems across a 32-sector map cover
 | 24 | Lille | 195K | Industrial | Nord coal + reserves |
 | 25 | Brussels | 1,100K | Capital | Benelux Command HQ |
 | 26 | Antwerp | 260K | Naval Base | Major port, North Sea fleet |
-| 27 | Paris | 5,000K | Capital | Western Front Command HQ |
-| 28 | Orleans | 85K | Logistics Hub | Loire crossing, central logistics |
-| 29 | Lyon | 530K | Industrial | Rhône-Alpes industry |
-| 30 | Brest | 120K | Sub Base | Finistère submarine pens |
-| 31 | Bordeaux | 250K | Default | Southern reserves |
+| 27 | Rotterdam | 750K | Naval Base | Europoort, North Sea Fleet Pride |
+| 28 | Amsterdam | 870K | Trade Hub | Trade, finance, industry |
+| 29 | Luxembourg | 200K | Industrial | Steel industry, quiet rear area |
+| 30 | Paris | 5,000K | Capital | Western Front Command HQ |
+| 31 | Orleans | 85K | Logistics Hub | Loire crossing, central logistics |
+| 32 | Lyon | 530K | Industrial | Rhône-Alpes industry |
+| 33 | Brest | 120K | Sub Base | Finistère submarine pens |
+| 34 | Bordeaux | 250K | Default | Southern reserves |
 
 ### Sea Zones (6)
 
@@ -58,7 +61,7 @@ The simulation integrates 12 interconnected systems across a 32-sector map cover
 |------|------|-------|----------|------------|
 | 0 | Dover Strait | 33km | Dover ↔ Calais | PRIMARY — shortest crossing |
 | 1 | Western Channel | 120km | Portsmouth/Brighton ↔ Dunkirk/Le Havre | Thames Estuary + Normandy route |
-| 2 | North Sea | 500km | Liverpool/Leeds/Edinburgh ↔ Antwerp | Flanking via Antwerp Baltic Fleet |
+| 2 | North Sea | 500km | Liverpool/Leeds/Edinburgh ↔ Antwerp/Rotterdam/Amsterdam | Flanking via expanded Benelux fleet |
 | 3 | Irish Sea | 300km | Dublin/Belfast ↔ Liverpool/Glasgow | Wolf packs starve Ireland |
 | 4 | Bay of Biscay | 600km | Plymouth ↔ Brest/Bordeaux/Cherbourg | Brest submarine pens |
 | 5 | North Atlantic | Open ocean | Dublin/Glasgow ↔ convoy routes | Convoy lifeline, Brest subs |
@@ -143,7 +146,7 @@ Conscription draws from: **unemployed proles first** → **unemployed outer part
 
 ## 4. Research System (`extensions/research/research_system.py`)
 
-### 6 Branches × 5 Tiers = 30 Technologies
+### 10 Branches × 5 Tiers = 50 Technologies
 
 | Branch | Focus | T5 Capstone |
 |--------|-------|-------------|
@@ -153,6 +156,10 @@ Conscription draws from: **unemployed proles first** → **unemployed outer part
 | AIR | Fighters, bombing, speed | Jet Propulsion (needs Industry T3) |
 | LAND | Infantry, artillery, armor, forts | Guided Munitions (needs Electronics T3) |
 | DOCTRINE | Org recovery, supply, planning | Total War Doctrine |
+| NUCLEAR | Atomic weapons, power, radiation | Thermonuclear Weapons (needs Industry T5) |
+| ROCKETRY | Ballistic missiles, space, delivery | ICBM (needs Electronics T4) |
+| CRYPTOGRAPHY | Encryption, signals intelligence | Quantum Cryptography (needs Electronics T5) |
+| INFRASTRUCTURE | Roads, rail, ports, logistics | Maglev Networks (needs Industry T4) |
 
 **Research Time**: T1=8 weeks, T2=12, T3=18, T4=25, T5=35 weeks
 
@@ -162,6 +169,10 @@ Conscription draws from: **unemployed proles first** → **unemployed outer part
 - Jet Propulsion → needs Industry T3
 - Guided Munitions → needs Electronics T3
 - Advanced Sonar → needs Electronics T2
+- Thermonuclear Weapons → needs Industry T5 + Nuclear T4
+- ICBM → needs Rocketry T4 + Electronics T4
+- Quantum Cryptography → needs Electronics T5 + Cryptography T4
+- Maglev Networks → needs Infrastructure T4 + Industry T4
 
 **Anti-Exploitation**: Max 2 simultaneous projects. Bonuses are multiplicative and incremental (+8-12% per tier, not +20%). Can't skip tiers.
 
@@ -325,7 +336,32 @@ A fourth LLM provides narrative dispatches each turn in the style of **Edward R.
 
 ---
 
-## 12. LLM Benchmark (`tests/benchmark_llm.py`)
+## 13. Land Combat System (`extensions/military/land_bridge.py`)
+
+### CoW Unit Integration
+Reuses the existing Call of War combat system from `extensions/military/cow_combat.py` with 30+ unit types:
+
+- **Infantry**: Infantry, Militia, Guards, Ski Troops, Shock Troops, Engineers, Snipers
+- **Armor**: Light Tank, Medium Tank, Heavy Tank, Tank Destroyer, Flame Tank
+- **Support**: Artillery, Mortar, Rocket Artillery, Anti-Air, Supply Truck
+- **Recon**: Armored Car, Recon Infantry
+
+### Per-Sector Garrisons
+Each sector can host land units from multiple factions. Combat resolves automatically each turn in contested sectors:
+
+- **Starting forces**: 69 Oceania units + 55 Eurasia units across 35 sectors
+- **Historical placement**: Guards in London, Tanks in Calais, etc.
+- **Beachhead spawning**: Successful invasions spawn 2 infantry + 1 militia in target sector
+
+### Combat Resolution
+- **Lanchester laws** with terrain bonuses
+- **Urban**: +35% defense for Guards
+- **Plains/Open**: Standard combat
+- **Contested sectors**: Show as yellow on map, resolve each turn
+
+---
+
+## 14. LLM Benchmark (`tests/benchmark_llm.py`)
 
 ### Multi-Provider Support
 - **Anthropic** (Claude): Auto-detected from model name containing "claude"
@@ -365,7 +401,7 @@ Every game saves a comprehensive JSON log with:
 | **Budget** | SET_BUDGET cat1 val1 cat2 val2..., ANTI_CORRUPTION |
 | **Manpower** | TRAIN_MILITARY city count, CONSCRIPT city count, MOBILIZE_RESERVES city |
 | **Intel** | PLANT_SPY city, CODE_BREAK, COUNTER_INTEL, DECEPTION city, CHANGE_CODES |
-| **Research** | RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE) |
+| **Research** | RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE/NUCLEAR/ROCKETRY/CRYPTOGRAPHY/INFRASTRUCTURE) |
 | **Invasion** | PLAN_INVASION origin target zone, RECKLESS_INVASION origin target zone, AIRBORNE_INVASION target |
 | **Special** | SUPPORT_BLF, DECLARE_WAR_BLF, CONTINUE_SUPPORT_BLF, NOOP |
 
@@ -423,7 +459,7 @@ extensions/
     pop_params.py      — Archetype parameters
     pop_dynamics.py    — Population ODE dynamics
   research/
-    research_system.py — 6×5 tech tree with prerequisites
+    research_system.py — 10×5 tech tree with prerequisites
   governance/
     budget_system.py   — Budget, corruption, bureaucracy
   resistance/

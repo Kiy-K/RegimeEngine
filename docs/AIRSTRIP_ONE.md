@@ -4,13 +4,13 @@
 
 ## Overview
 
-Strategic war simulation set in George Orwell's *Nineteen Eighty-Four*. Three AI players — **Oceania** (Ingsoc / Big Brother), **Eurasia** (Neo-Bolshevism / Marshal Kalinin), and **Winston Smith** (British Liberation Front) — compete across a **32-sector map** covering all of the British Isles and Central France. Each turn represents **1 week** of in-game time, starting January 1984.
+Strategic war simulation set in George Orwell's *Nineteen Eighty-Four*. Three AI players — **Oceania** (Ingsoc / Big Brother), **Eurasia** (Neo-Bolshevism / Marshal Kalinin), and **Winston Smith** (British Liberation Front) — compete across a **35-sector map** covering all of the British Isles, France, Benelux, and Netherlands. Each turn represents **1 week** of in-game time, starting January 1984.
 
 A fourth LLM serves as a war correspondent providing Edward R. Murrow-style narrative dispatches.
 
 The war is not meant to be won — it is meant to be continuous. Both superstates grind each other down in perpetual conflict that justifies totalitarian control. But Winston Smith has other plans.
 
-## Theatre Map — 32 Sectors, 6 Sea Zones
+## Theatre Map — 35 Sectors, 6 Sea Zones
 
 ```
                          OCEANIA — All British Isles (18 sectors)
@@ -31,16 +31,21 @@ The war is not meant to be won — it is meant to be continuous. Both superstate
     │  [21] Cherbourg ─ [20] Le_Havre  [19] Dunkirk ── [18] CALAIS    │
     │    sub base      Normandy   │      fleet base      staging       │
     │        │                [23] Rouen ── [22] Amiens ── [24] Lille  │
-    │  [30] BREST            steel mills    rail hub        │          │
+    │  [33] BREST            steel mills    rail hub        │          │
     │   sub pens                    │                  [25] Brussels    │
-    │        │              [27] PARIS ────────────── [26] Antwerp     │
-    │  [31] Bordeaux         HQ    │                  N Sea fleet      │
-    │                        [28] Orleans                              │
+    │        │              [30] PARIS ────────────── [26] Antwerp     │
+    │  [34] Bordeaux         HQ    │                  N Sea fleet      │
+    │                        [31] Orleans                              │
     │                              │                                   │
-    │                        [29] Lyon                                 │
+    │                        [32] Lyon                                 │
     │                        industry                                  │
+    │                    ════════════════════════════════════════════    │
+    │                    ║           EXPANDED BENELUX (5 sectors)      ║
+    │                    ║  [27] Rotterdam — Europoort, N Sea Fleet   ║
+    │                    ║  [28] Amsterdam — trade, finance, industry ║
+    │                    ║  [29] Luxembourg — steel, quiet rear area  ║
     └────────────────────────────────────────────────────────────────────┘
-                    EURASIA — France + Benelux (14 sectors)
+                    EURASIA — France + Benelux + Netherlands (17 sectors)
 ```
 
 ### Sea Zones (6)
@@ -49,7 +54,7 @@ The war is not meant to be won — it is meant to be continuous. Both superstate
 |------|------|-------|------------|
 | 0 | Dover Strait | 33km | PRIMARY — shortest crossing |
 | 1 | Western Channel | 120km | Thames Estuary + Normandy route |
-| 2 | North Sea | 500km | Flanking via Antwerp |
+| 2 | North Sea | 500km | Flanking via Antwerp/Rotterdam/Amsterdam |
 | 3 | Irish Sea | 300km | Wolf packs starve Ireland |
 | 4 | Bay of Biscay | 600km | Brest submarine pens → Plymouth |
 | 5 | North Atlantic | Open | Convoy lifeline |
@@ -77,7 +82,7 @@ The war is not meant to be won — it is meant to be continuous. Both superstate
 | 16 | **Dublin** | 650K | Urban | Airstrip Two capital. Atlantic Fleet. |
 | 17 | **Belfast** | 440K | Urban | Harland & Wolff shipyards. |
 
-## Eurasia Sectors (14)
+## Eurasia Sectors (17)
 
 | ID | City | Pop (1958) | Terrain | Role |
 |----|------|-----------|---------|------|
@@ -90,11 +95,14 @@ The war is not meant to be won — it is meant to be continuous. Both superstate
 | 24 | **Lille** | 195K | Plains | Nord coal. Training. Reserves. |
 | 25 | **Brussels** | 1,100K | Urban | Benelux Command HQ. |
 | 26 | **Antwerp** | 260K | Urban | Major port. North Sea fleet. |
-| 27 | **Paris** | 5,000K | Urban | Western Front Command HQ. |
-| 28 | **Orleans** | 85K | Plains | Loire logistics hub. |
-| 29 | **Lyon** | 530K | Urban | Rhône-Alpes industry. Southern reserves. |
-| 30 | **Brest** | 120K | Urban | Finistère submarine pens. Wolf packs. |
-| 31 | **Bordeaux** | 250K | Plains | Southern reserves. |
+| 27 | **Rotterdam** | 750K | Urban | Europoort. North Sea Fleet Pride. |
+| 28 | **Amsterdam** | 870K | Urban | Trade, finance, industry. |
+| 29 | **Luxembourg** | 200K | Urban | Steel industry. Quiet rear area. |
+| 30 | **Paris** | 5,000K | Urban | Western Front Command HQ. |
+| 31 | **Orleans** | 85K | Plains | Loire logistics hub. |
+| 32 | **Lyon** | 530K | Urban | Rhône-Alpes industry. Southern reserves. |
+| 33 | **Brest** | 120K | Urban | Finistère submarine pens. Wolf packs. |
+| 34 | **Bordeaux** | 250K | Plains | Southern reserves. |
 
 Population data from **1958 census** (interpolated 1951/1961 UK, 1954 French Census).
 
@@ -112,7 +120,7 @@ Population data from **1958 census** (interpolated 1951/1961 UK, 1954 French Cen
 - **Regime**: Communist (bureaucracy speed ×0.85 — committee approvals)
 - **Conscription**: General Mobilisation
 - **Base corruption**: 12% (floor 4.8%)
-- **Population**: ~7.9M across 14 sectors
+- **Population**: ~10.2M across 17 sectors
 - **Strengths**: Brest submarine pens, 5 invasion axes, strategic depth (Paris/Lyon/Orleans)
 - **Weaknesses**: Smaller population, Channel crossing, higher corruption
 
@@ -123,22 +131,23 @@ Population data from **1958 census** (interpolated 1951/1961 UK, 1954 French Cen
 - **Strengths**: Exploits Oceania's weaknesses (food shortages, bombing damage, low welfare)
 - **Weaknesses**: Thought Police, detection heat, limited arms
 
-## 12 Integrated Systems
+## 13 Integrated Systems
 
 See [AIRSTRIP_ONE_SYSTEMS.md](AIRSTRIP_ONE_SYSTEMS.md) for full technical documentation of all systems:
 
 1. **Economy** — 10 factory types, GDP, power dependency
 2. **Population** — Real numbers (1958 census), 1984 social classes, 8 job types
-3. **Research** — 6 branches × 5 tiers, cross-branch prerequisites
+3. **Research** — 10 branches × 5 tiers, cross-branch prerequisites
 4. **Governance** — 7 budget categories, corruption (asymptotic), bureaucracy delays
 5. **Naval** — 14 ship classes, 6 sea zones, 3 invasion types
 6. **Air Force** — 10 aircraft types, 7 bases per side
-7. **BLF Resistance** — 7 escalation levels (DORMANT → BETRAYED_REVOLUTION)
-8. **Intelligence** — Fog of war, spy rings, code-breaking, radar
-9. **Weather** — Maritime climate, seasonal model, affects all operations
-10. **Manpower** — Conscription laws, training pipeline
-11. **War Economy** — Legacy resource model (runs alongside new Economy)
-12. **War Correspondent** — Murrow/Pyle narrative dispatches
+7. **Land Combat** — CoW units, per-sector garrisons, 30+ unit types
+8. **BLF Resistance** — 7 escalation levels (DORMANT → BETRAYED_REVOLUTION)
+9. **Intelligence** — Fog of war, spy rings, code-breaking, radar
+10. **Weather** — Maritime climate, seasonal model, affects all operations
+11. **Manpower** — Conscription laws, training pipeline
+12. **War Economy** — Legacy resource model (runs alongside new Economy)
+13. **War Correspondent** — Murrow/Pyle narrative dispatches
 
 ## Running the Simulation
 
@@ -150,17 +159,21 @@ python tests/benchmark_llm.py \
     --winston-model claude-haiku-4-5-20251001 \
     --commentary-model mistral-medium-latest \
     --turns 100 --seed 451
+
+# GUI with real-time map visualization
+.venv/bin/python gui/main.py --seed 451 --turns 100 --speed 1.0
 ```
 
 ## Strategic Dynamics
 
 ### The Channel Problem (6 Sea Zones)
-The English Channel is no longer a simple 2-crossing barrier. With 6 sea zones, Eurasia has **5 invasion axes**:
+The English Channel is no longer a simple 2-crossing barrier. With 6 sea zones, Eurasia has **6 invasion axes**:
 1. **Dover Strait** (33km) — shortest, heaviest defense
 2. **Western Channel / Normandy** (120km) — Le Havre/Cherbourg → Brighton/Portsmouth
-3. **North Sea** (500km) — Antwerp → Liverpool/Edinburgh (flanking)
+3. **North Sea** (500km) — Antwerp/Rotterdam/Amsterdam → Liverpool/Edinburgh (flanking)
 4. **Bay of Biscay** (600km) — Brest → Plymouth (unexpected western approach)
 5. **Airborne** — paratroop drop on Canterbury/Norwich (no ships needed)
+6. **Benelux Coast** — Rotterdam's Europoort as additional North Sea fleet base
 
 Oceania must defend ALL 6 zones simultaneously.
 
