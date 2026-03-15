@@ -83,6 +83,13 @@ from extensions.governance.budget_system import (
 from extensions.military.land_bridge import (
     LandWorld, initialize_land, step_land, land_summary,
 )
+from gravitas_engine.systems.government import (
+    GovernmentType, GovernmentModifiers, get_government_modifiers, government_summary,
+)
+from gravitas_engine.systems.national_spirit import (
+    SpiritWorld, FactionSpirits, initialize_spirits, step_spirits,
+    spirits_summary, aggregate_spirit_modifiers,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -106,6 +113,8 @@ class GameState:
     pop: Optional[Any] = None                  # PopWorld — realistic population (real numbers)
     research: Optional[Any] = None             # ResearchWorld — HOI4-style tech tree
     governance: Optional[Any] = None           # GovernanceWorld — budget + corruption
+    spirits: Optional[Any] = None              # SpiritWorld — national spirits per faction
+    government_types: Dict[int, str] = field(default_factory=dict)  # faction_id → GovernmentType name
 
     # Cluster data (simplified ground state)
     cluster_data: Any = None  # (N, 6) array [σ, h, r, m, τ, p]
@@ -472,6 +481,8 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         pop=initialize_pop_v2(n, cluster_owners, rng),
         research=initialize_research([0, 1]),
         governance=initialize_governance([0, 1]),
+        spirits=initialize_spirits([0, 1]),
+        government_types={0: "TOTALITARIAN", 1: "COMMUNIST"},
         cluster_data=cluster_data,
         cluster_owners=cluster_owners,
         terrain_types=terrain_types,
@@ -532,6 +543,12 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
                 faction_gdps[fid] = fe.total_gdp
         game.governance, gov_fb = step_governance(game.governance, faction_gdps, rng, dt)
         feedback["governance"] = gov_fb
+
+    # 1f. National Spirits (tick timed spirits)
+    if game.spirits is not None:
+        expired = step_spirits(game.spirits)
+        if expired:
+            feedback["spirits_expired"] = expired
 
     # 2. Manpower
     for i, mp in enumerate(game.manpower_clusters):
@@ -723,6 +740,18 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
     lines = []
     lines.append(f"=== WEEK {week}/{game.max_turns} | {month} {year} | {fname} ===")
     lines.append(f"Score: You {game.faction_scores[faction_id]:.0f} vs {ename} {game.faction_scores[enemy_id]:.0f}")
+
+    # ── Government & National Spirits ────────────────────────────────── #
+    gov_name = game.government_types.get(faction_id, "Unknown")
+    if gov_name:
+        gov_type_enum = GovernmentType[gov_name] if gov_name in GovernmentType.__members__ else None
+        if gov_type_enum:
+            gm = get_government_modifiers(gov_type_enum)
+            lines.append(f"Government: {gm.name} | " + government_summary(gov_type_enum))
+    if game.spirits is not None and faction_id in game.spirits.factions:
+        fs = game.spirits.factions[faction_id]
+        if fs.active_spirits:
+            lines.append(f"National Spirits: {spirits_summary(fs)}")
     lines.append("")
 
     # ── Get fog of war visibility ────────────────────────────────────── #
