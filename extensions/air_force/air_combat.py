@@ -25,10 +25,83 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+try:
+    from numba import njit
+    _NUMBA = True
+except ImportError:
+    _NUMBA = False
+    def njit(*args, **kwargs):
+        def _wrap(fn): return fn
+        if args and callable(args[0]): return args[0]
+        return _wrap
+
 from .air_state import (
     AircraftType, AircraftRole, AircraftSquadron, AirWing, AirZone,
     AirZoneControl, AirWorld, AIRCRAFT_STATS,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# Numba JIT kernels — per-squadron vectorized air combat                    #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+@njit(cache=True)
+def _air_lanchester_kernel(
+    atk_power_arr, atk_speed_arr, def_power_arr, def_speed_arr,
+    weather_mod, dt, rng_val,
+):
+    """
+    Lanchester air combat on flat arrays.
+    Returns (atk_damage_dealt, def_damage_dealt).
+    """
+    atk_power = 0.0
+    for i in range(atk_power_arr.shape[0]):
+        atk_power += atk_power_arr[i]
+    def_power = 0.0
+    for i in range(def_power_arr.shape[0]):
+        def_power += def_power_arr[i]
+
+    atk_power *= weather_mod
+    def_power *= weather_mod
+
+    # Speed initiative
+    max_atk = 0.0
+    for i in range(atk_speed_arr.shape[0]):
+        if atk_speed_arr[i] > max_atk:
+            max_atk = atk_speed_arr[i]
+    max_def = 0.0
+    for i in range(def_speed_arr.shape[0]):
+        if def_speed_arr[i] > max_def:
+            max_def = def_speed_arr[i]
+
+    speed_adv = (max_atk - max_def) / 800.0
+    atk_init = 1.0 + 0.2 * max(0.0, speed_adv)
+    def_init = 1.0 + 0.2 * max(0.0, -speed_adv)
+
+    total = atk_power * atk_init + def_power * def_init + 0.01
+    atk_dmg = (atk_power * atk_init / total) * atk_power * 0.15 * dt
+    def_dmg = (def_power * def_init / total) * def_power * 0.15 * dt
+
+    atk_dmg *= rng_val
+    def_dmg *= (2.0 - rng_val)
+
+    return atk_dmg, def_dmg
+
+
+@njit(cache=True)
+def _distribute_air_damage_kernel(strength, power_share, total_damage, fuel, fuel_cost):
+    """
+    Distribute air combat damage across squadrons weighted by power share.
+    Modifies strength and fuel in-place. Returns total_loss.
+    """
+    n = strength.shape[0]
+    total_loss = 0.0
+    for i in range(n):
+        loss = total_damage * power_share[i] * 0.03
+        strength[i] = max(0.0, strength[i] - loss)
+        fuel[i] = max(0.0, fuel[i] - fuel_cost[i] * 0.01)
+        total_loss += loss
+    return total_loss
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -86,48 +159,44 @@ def resolve_air_battle(
     if not atk_fighters and not def_fighters:
         return results
 
-    # Aggregate combat power
-    atk_power = sum(sq.combat_power * sq.stats.air_attack for sq in atk_fighters)
-    def_power = sum(sq.combat_power * sq.stats.air_attack for sq in def_fighters)
-
+    # Flatten squadron stats to arrays for JIT kernel
     weather_mod = max(0.4, 1.0 - 0.3 * cloud_cover)
-    atk_power *= weather_mod
-    def_power *= weather_mod
+    atk_pw = np.array([sq.combat_power * sq.stats.air_attack for sq in atk_fighters], dtype=np.float64)
+    def_pw = np.array([sq.combat_power * sq.stats.air_attack for sq in def_fighters], dtype=np.float64)
+    atk_sp = np.array([sq.stats.speed for sq in atk_fighters], dtype=np.float64)
+    def_sp = np.array([sq.stats.speed for sq in def_fighters], dtype=np.float64)
 
-    # Speed advantage → initiative
-    atk_speed = max((sq.stats.speed for sq in atk_fighters), default=0)
-    def_speed = max((sq.stats.speed for sq in def_fighters), default=0)
-    speed_adv = (atk_speed - def_speed) / 800.0
-    atk_init = 1.0 + 0.2 * max(0, speed_adv)
-    def_init = 1.0 + 0.2 * max(0, -speed_adv)
+    rng_val = rng.uniform(0.6, 1.4)
+    atk_damage, def_damage = _air_lanchester_kernel(
+        atk_pw, atk_sp, def_pw, def_sp, weather_mod, dt, rng_val)
 
-    total = atk_power * atk_init + def_power * def_init + 0.01
+    # Distribute losses via JIT kernel (flatten, compute, write back)
+    atk_power_total = float(atk_pw.sum()) + 0.01
+    def_power_total = float(def_pw.sum()) + 0.01
 
-    # Damage exchange (Lanchester)
-    atk_damage = (atk_power * atk_init / total) * atk_power * 0.15 * dt
-    def_damage = (def_power * def_init / total) * def_power * 0.15 * dt
+    # Defender takes atk_damage
+    def_str = np.array([sq.strength for sq in def_fighters], dtype=np.float64)
+    def_share = def_pw / def_power_total
+    def_fuel = np.array([sq.fuel for sq in def_fighters], dtype=np.float64)
+    def_fcost = np.array([sq.stats.fuel_per_sortie for sq in def_fighters], dtype=np.float64)
+    def_loss = _distribute_air_damage_kernel(def_str, def_share, atk_damage, def_fuel, def_fcost)
+    for i, sq in enumerate(def_fighters):
+        sq.strength = def_str[i]
+        sq.fuel = def_fuel[i]
+        sq.sorties_today += 1
+    results["defender_losses"] += def_loss
 
-    atk_damage *= rng.uniform(0.6, 1.4)
-    def_damage *= rng.uniform(0.6, 1.4)
-
-    # Distribute losses to defender squadrons
-    for sq in def_fighters:
-        if def_power > 0.01:
-            share = (sq.combat_power * sq.stats.air_attack) / def_power
-            loss = atk_damage * share * 0.03
-            sq.strength = max(0.0, sq.strength - loss)
-            sq.sorties_today += 1
-            sq.fuel = max(0.0, sq.fuel - sq.stats.fuel_per_sortie * 0.01)
-            results["defender_losses"] += loss
-
-    for sq in atk_fighters:
-        if atk_power > 0.01:
-            share = (sq.combat_power * sq.stats.air_attack) / atk_power
-            loss = def_damage * share * 0.03
-            sq.strength = max(0.0, sq.strength - loss)
-            sq.sorties_today += 1
-            sq.fuel = max(0.0, sq.fuel - sq.stats.fuel_per_sortie * 0.01)
-            results["attacker_losses"] += loss
+    # Attacker takes def_damage
+    atk_str = np.array([sq.strength for sq in atk_fighters], dtype=np.float64)
+    atk_share = atk_pw / atk_power_total
+    atk_fuel = np.array([sq.fuel for sq in atk_fighters], dtype=np.float64)
+    atk_fcost = np.array([sq.stats.fuel_per_sortie for sq in atk_fighters], dtype=np.float64)
+    atk_loss = _distribute_air_damage_kernel(atk_str, atk_share, def_damage, atk_fuel, atk_fcost)
+    for i, sq in enumerate(atk_fighters):
+        sq.strength = atk_str[i]
+        sq.fuel = atk_fuel[i]
+        sq.sorties_today += 1
+    results["attacker_losses"] += atk_loss
 
     # Experience gain for survivors
     for sq in atk_fighters + def_fighters:

@@ -30,10 +30,97 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+try:
+    from numba import njit
+    _NUMBA = True
+except ImportError:
+    _NUMBA = False
+    def njit(*args, **kwargs):
+        def _wrap(fn): return fn
+        if args and callable(args[0]): return args[0]
+        return _wrap
+
 from .naval_state import (
     ShipClass, ShipCategory, ShipInstance, Fleet, SeaZone,
     MineField, SHIP_STATS, SeaZoneControl,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+# Numba JIT kernels — per-ship vectorized combat on flat arrays             #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+@njit(cache=True)
+def _lanchester_surface_kernel(
+    atk_fp, atk_eff, def_fp, def_eff, atk_spd, def_spd,
+    weather_mult, atk_cmd, def_cmd, dt, rng_val,
+):
+    """
+    Lanchester Square Law damage exchange on flat arrays.
+    atk_fp/def_fp: firepower arrays, atk_eff/def_eff: effectiveness arrays.
+    Returns (atk_damage_dealt, def_damage_dealt).
+    """
+    atk_power = 0.0
+    for i in range(atk_fp.shape[0]):
+        atk_power += atk_fp[i] * atk_eff[i]
+    def_power = 0.0
+    for i in range(def_fp.shape[0]):
+        def_power += def_fp[i] * def_eff[i]
+
+    atk_power *= weather_mult * atk_cmd
+    def_power *= weather_mult * def_cmd
+
+    # Speed initiative
+    max_atk_spd = 0.0
+    for i in range(atk_spd.shape[0]):
+        if atk_spd[i] > max_atk_spd:
+            max_atk_spd = atk_spd[i]
+    max_def_spd = 0.0
+    for i in range(def_spd.shape[0]):
+        if def_spd[i] > max_def_spd:
+            max_def_spd = def_spd[i]
+
+    speed_adv = (max_atk_spd - max_def_spd) / 40.0
+    atk_init = 1.0 + 0.15 * max(0.0, speed_adv)
+    def_init = 1.0 + 0.15 * max(0.0, -speed_adv)
+
+    total = atk_power * atk_init + def_power * def_init + 0.01
+    atk_dmg = (atk_power * atk_init / total) * atk_power * 0.3 * dt
+    def_dmg = (def_power * def_init / total) * def_power * 0.3 * dt
+
+    # Random factor encoded in rng_val (0.7-1.3 range)
+    atk_dmg *= rng_val
+    def_dmg *= (2.0 - rng_val)  # inverse correlation
+
+    return atk_dmg, def_dmg
+
+
+@njit(cache=True)
+def _distribute_damage_kernel(hp, max_hp, armor, damage_level, total_damage):
+    """
+    Distribute total_damage across ships weighted by armor.
+    Modifies hp, damage_level in-place. Returns (total_actual_dmg, ships_sunk).
+    """
+    n = hp.shape[0]
+    # Weights by armor
+    w_sum = 0.0
+    for i in range(n):
+        w_sum += max(0.1, armor[i])
+
+    total_actual = 0.0
+    sunk = 0
+    for i in range(n):
+        w = max(0.1, armor[i]) / w_sum
+        ship_dmg = total_damage * w
+        armor_red = armor[i] / 12.0
+        actual = ship_dmg * (1.0 - armor_red * 0.5)
+        hp[i] = max(0.0, hp[i] - actual)
+        damage_level[i] = min(1.0, damage_level[i] + actual / max(max_hp[i], 1.0) * 0.3)
+        total_actual += actual
+        if hp[i] <= 0.0:
+            sunk += 1
+
+    return total_actual, sunk
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -161,35 +248,25 @@ def resolve_naval_battle(
                 if target.hp <= 0:
                     results["attacker_ships_sunk"] += 1
 
-    # ── Phase 2: Surface gunnery (Lanchester model) ──────────────────── #
+    # ── Phase 2: Surface gunnery (Lanchester model — JIT vectorized) ── #
     atk_surface = [s for s in atk_ships if s.is_alive and not s.stats.is_submersible]
     def_surface = [s for s in def_ships if s.is_alive and not s.stats.is_submersible]
 
     if atk_surface and def_surface:
-        # Aggregate combat power
-        atk_power = sum(s.stats.firepower * s.combat_effectiveness for s in atk_surface)
-        def_power = sum(s.stats.firepower * s.combat_effectiveness for s in def_surface)
+        # Flatten ship stats to arrays for JIT kernel
+        atk_fp = np.array([s.stats.firepower for s in atk_surface], dtype=np.float64)
+        atk_eff = np.array([s.combat_effectiveness for s in atk_surface], dtype=np.float64)
+        def_fp = np.array([s.stats.firepower for s in def_surface], dtype=np.float64)
+        def_eff = np.array([s.combat_effectiveness for s in def_surface], dtype=np.float64)
+        atk_spd = np.array([s.stats.speed for s in atk_surface], dtype=np.float64)
+        def_spd = np.array([s.stats.speed for s in def_surface], dtype=np.float64)
 
-        atk_power *= weather_mult * atk_cmd
-        def_power *= weather_mult * def_cmd
+        rng_val = rng.uniform(0.7, 1.3)
+        atk_damage_dealt, def_damage_dealt = _lanchester_surface_kernel(
+            atk_fp, atk_eff, def_fp, def_eff, atk_spd, def_spd,
+            weather_mult, atk_cmd, def_cmd, dt, rng_val)
 
-        # Initiative: faster fleet gets accuracy bonus
-        atk_speed = max(s.stats.speed for s in atk_surface)
-        def_speed = max(s.stats.speed for s in def_surface)
-        speed_advantage = (atk_speed - def_speed) / 40.0  # normalized
-        atk_init = 1.0 + 0.15 * max(0, speed_advantage)
-        def_init = 1.0 + 0.15 * max(0, -speed_advantage)
-
-        # Lanchester damage exchange
-        total_power = atk_power * atk_init + def_power * def_init + 0.01
-        atk_damage_dealt = (atk_power * atk_init / total_power) * atk_power * 0.3 * dt
-        def_damage_dealt = (def_power * def_init / total_power) * def_power * 0.3 * dt
-
-        # Add randomness
-        atk_damage_dealt *= rng.uniform(0.7, 1.3)
-        def_damage_dealt *= rng.uniform(0.7, 1.3)
-
-        # Distribute damage to defender's ships (prioritize largest)
+        # Distribute damage via JIT kernel (modifies arrays in-place)
         _distribute_damage(def_surface, atk_damage_dealt, results, "defender", rng)
         _distribute_damage(atk_surface, def_damage_dealt, results, "attacker", rng)
 
