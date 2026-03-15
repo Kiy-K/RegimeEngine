@@ -139,6 +139,7 @@ class CorruptionState:
     total_stolen: float = 0.0         # cumulative GDP lost to corruption
     anti_corruption_fatigue: float = 0.0  # diminishing returns on purges
     purges_this_game: int = 0
+    purges_this_turn: int = 0         # cap: max 1 purge per turn
 
     @property
     def floor(self) -> float:
@@ -308,33 +309,50 @@ def step_governance(
         fb.gdp_revenue = gdp
         corr = fb.corruption
 
-        # ── 1. Corruption evolution ───────────────────────────────────── #
-        # Natural growth from war profiteering
-        corr.current_rate = min(0.50, corr.current_rate + 0.008 * dt)
+        # ── 1. Corruption evolution (unpredictable, multi-factor) ────── #
+        # Reset per-turn purge counter
+        corr.purges_this_turn = 0
+
+        # Natural growth DIMINISHES as corruption rises (saturation)
+        # At 10% corruption: grows +0.8%/turn. At 40%: grows only +0.2%/turn
+        saturation = 1.0 - (corr.current_rate / 0.50)  # 1.0 at 0%, 0.0 at 50%
+        base_growth = 0.008 * max(0.2, saturation) * dt
+
+        # Random factor: corruption growth is UNPREDICTABLE
+        # Economy health, bureaucracy efficiency, random events
+        random_factor = rng.uniform(0.3, 1.8)  # wild swings
+        base_growth *= random_factor
+
+        corr.current_rate = min(0.50, corr.current_rate + base_growth)
 
         # High military spending breeds procurement fraud
         mil_alloc = fb.get_allocation(BudgetCategory.MILITARY)
         if mil_alloc > 0.35:
-            corr.current_rate += (mil_alloc - 0.35) * 0.05 * dt
+            corr.current_rate += (mil_alloc - 0.35) * 0.03 * rng.uniform(0.5, 1.5) * dt
 
         # High police spending breeds extortion
         pol_alloc = fb.get_allocation(BudgetCategory.POLICE)
         if pol_alloc > 0.15:
-            corr.current_rate += (pol_alloc - 0.15) * 0.03 * dt
+            corr.current_rate += (pol_alloc - 0.15) * 0.02 * dt
 
         # Low welfare = desperate officials skim more
         wel_alloc = fb.get_allocation(BudgetCategory.WELFARE)
         if wel_alloc < 0.10:
-            corr.current_rate += (0.10 - wel_alloc) * 0.04 * dt
+            corr.current_rate += (0.10 - wel_alloc) * 0.03 * dt
 
-        # Good welfare = population reports fraud
+        # Good welfare = population reports fraud (stronger effect)
         if wel_alloc > 0.20:
-            corr.current_rate = max(0.02, corr.current_rate - 0.003 * dt)
+            corr.current_rate = max(corr.floor, corr.current_rate - 0.005 * dt)
+
+        # Infrastructure investment reduces bureaucratic waste
+        infra_alloc = fb.get_allocation(BudgetCategory.INFRASTRUCTURE)
+        if infra_alloc > 0.10:
+            corr.current_rate = max(corr.floor, corr.current_rate - (infra_alloc - 0.10) * 0.02 * dt)
 
         # Enforce asymptotic floor — corruption NEVER reaches 0%
         corr.current_rate = max(corr.floor, min(0.50, corr.current_rate))
 
-        # Anti-corruption fatigue decays slowly (bureaucracy adapts to purges)
+        # Anti-corruption fatigue decays slowly
         corr.anti_corruption_fatigue = max(0, corr.anti_corruption_fatigue - 0.02 * dt)
 
         # Track stolen GDP
@@ -450,18 +468,30 @@ def apply_budget_action(
 
     elif action == "ANTI_CORRUPTION":
         corr = fb.corruption
+
+        # Anti-exploit: MAX 1 PURGE PER TURN
+        if corr.purges_this_turn >= 1:
+            return world, "Anti-corruption already done this turn. DO NOT repeat — focus on other actions."
+
+        corr.purges_this_turn += 1
+
         # Cost: 2% of GDP
         cost = fb.gdp_revenue * 0.02
         # Diminishing returns: each purge is less effective
-        effectiveness = max(0.005, 0.03 * (1.0 / (1.0 + corr.anti_corruption_fatigue)))
+        effectiveness = max(0.003, 0.03 * (1.0 / (1.0 + corr.anti_corruption_fatigue)))
         corr.current_rate = max(corr.floor, corr.current_rate - effectiveness)
         corr.anti_corruption_fatigue += 0.3
         corr.purges_this_game += 1
 
+        # Show futility warning when purges are useless
+        futility = ""
+        if effectiveness < 0.008:
+            futility = " ⚠ DIMINISHING RETURNS — invest in WELFARE or INFRASTRUCTURE instead."
+
         return world, (
-            f"Anti-corruption purge launched. Corruption: {corr.current_rate:.1%} "
+            f"Anti-corruption purge. Corruption: {corr.current_rate:.1%} "
             f"(-{effectiveness:.1%}). Cost: {cost:.0f} GDP. "
-            f"Purge #{corr.purges_this_game} — diminishing returns apply.")
+            f"Purge #{corr.purges_this_game}.{futility}")
 
     return world, f"Unknown budget action: {action}"
 

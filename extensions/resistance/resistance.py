@@ -508,10 +508,10 @@ def step_resistance(
         #   - Arms caches >= 5 (armed revolution, not just riots)
         #   - Winston alive and not captured
         #   - Either: Eurasia beachhead exists OR total collapse of trust in London
-        has_force = blf.total_members > 200 and blf.arms_caches >= 5
+        has_force = blf.total_members > 150 and blf.arms_caches >= 3
         has_leader = blf.winston.is_alive and not blf.winston.is_captured
-        has_trigger = eurasia_beachhead or (london_trust < 0.2)
-        if blf.turns_at_current_level > 8 and has_force and has_leader and has_trigger:
+        has_trigger = eurasia_beachhead or (london_trust < 0.25) or blf.total_members > 500
+        if blf.turns_at_current_level > 5 and has_force and has_leader and has_trigger:
             blf.escalation = EscalationLevel.FULL_REVOLUTION
             blf.turns_at_current_level = 0
             blf.revolution_turn = blf.turns_at_current_level

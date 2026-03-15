@@ -2101,13 +2101,32 @@ def apply_blf_actions(game: GameState, actions: List[Dict[str, Any]], rng: np.ra
 
         elif t == "steal_arms":
             cid = act.get("cluster", 4)
-            if rng.random() < 0.6:  # 60% success
-                blf.arms_caches += 1
-                w.detection_heat = min(1.0, w.detection_heat + 0.12)
-                results.append(f"Arms raid on {_blf_cluster_name(cid)} Home Guard depot. Rifles acquired. TP alerted.")
+            # Success rate scales with BLF members in the city
+            # More members = more people to help the raid (lookouts, diversions)
+            # BUT too many members = easier to catch (proles are dumb, big groups attract attention)
+            # Sweet spot: 30-80 members. Below 10 = very hard. Above 100 = diminishing returns.
+            members_in_city = sum(c.size for c in blf.cells_in_cluster(cid))
+            if members_in_city <= 5:
+                success_chance = 0.20  # very few helpers, almost impossible
+            elif members_in_city <= 30:
+                success_chance = 0.35 + members_in_city * 0.01  # grows with members
+            elif members_in_city <= 80:
+                success_chance = 0.65  # sweet spot — good network, not too visible
             else:
-                w.detection_heat = min(1.0, w.detection_heat + 0.15)
-                results.append(f"Arms raid FAILED in {_blf_cluster_name(cid)}. Guards alert. Winston barely escapes.")
+                # Diminishing returns: big groups are sloppy, attract Thought Police
+                success_chance = 0.65 - (members_in_city - 80) * 0.003  # drops slowly
+                success_chance = max(0.30, success_chance)  # floor at 30%
+
+            if rng.random() < success_chance:
+                blf.arms_caches += 1
+                w.detection_heat = min(1.0, w.detection_heat + 0.10)
+                results.append(f"Arms raid on {_blf_cluster_name(cid)} depot. +1 cache ({blf.arms_caches} total). {members_in_city} proles helped.")
+            else:
+                w.detection_heat = min(1.0, w.detection_heat + 0.12)
+                if members_in_city > 80:
+                    results.append(f"Arms raid FAILED in {_blf_cluster_name(cid)}. Too many proles — Thought Police noticed the crowd.")
+                else:
+                    results.append(f"Arms raid FAILED in {_blf_cluster_name(cid)}. Guards alert. Winston barely escapes.")
 
         elif t == "inspire":
             blf.propaganda_level = min(1.0, blf.propaganda_level + 0.03)
@@ -2436,5 +2455,7 @@ def format_commentary_prompt(visible_events: str) -> str:
     return (
         f"FIELD OBSERVATIONS:\n{visible_events}\n\n"
         f"Write your dispatch. 3-5 sentences. Start with a vivid image. End with a human moment.\n"
-        f"Use specific 1984 locations and details. Show don't tell. Make us feel the war."
+        f"Use specific 1984 locations and details. Show don't tell. Make us feel the war.\n"
+        f"IMPORTANT: Do NOT repeat phrases from previous dispatches. No 'woman claws at rubble' or 'white cliffs tremble' again. "
+        f"Find NEW images, NEW characters, NEW locations each time. Vary your openings."
     )
