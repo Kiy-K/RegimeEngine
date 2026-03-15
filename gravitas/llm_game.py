@@ -121,6 +121,7 @@ class GameState:
     faction_names: Dict[int, str] = field(default_factory=lambda: {0: "Oceania", 1: "Eurasia"})
     game_over: bool = False
     winner: Optional[int] = None
+    _blf_army_spawned: bool = False  # one-time flag: BLF uprising units created
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -593,6 +594,65 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
             game.cluster_data[0, 5] += res_fb.get("polar_delta_london", 0.0)
             game.cluster_data[0, 4] += res_fb.get("trust_delta_london", 0.0)
             game.cluster_data[0] = np.clip(game.cluster_data[0], 0.0, 1.0)
+
+    # 6b. BLF FULL REVOLUTION → spawn faction 2 army in London (ONE TIME ONLY)
+    if (game.resistance is not None
+            and game.resistance.escalation == EscalationLevel.FULL_REVOLUTION
+            and game.land is not None
+            and not getattr(game, '_blf_army_spawned', False)):
+
+        game._blf_army_spawned = True  # anti-exploit: never trigger again
+        blf = game.resistance
+
+        # ── Convert BLF fighters to real military units ──────────────── #
+        # Arms caches determine quality: each cache = 1 armed squad
+        # Fighters without arms become militia, with arms become infantry
+        # Anti-exploit caps:
+        #   - Max 8 infantry (even with infinite arms, can't create an army)
+        #   - Max 12 militia (proles are many but weak)
+        #   - Arms caches capped at 10 for conversion
+        #   - Random ±20% on unit counts to prevent deterministic exploit
+
+        from extensions.military.cow_combat import CowUnitType, create_unit, reset_uid_counter
+        reset_uid_counter(50000)  # unique IDs for BLF units
+
+        arms = min(blf.arms_caches, 10)  # cap at 10
+        members = min(blf.total_members, 800)  # cap at 800 fighters
+
+        # Armed fighters → infantry (better troops)
+        n_infantry = min(8, arms)  # each cache arms ~1 squad
+        n_infantry = max(1, int(n_infantry * rng.uniform(0.8, 1.2)))
+
+        # Remaining fighters → militia (poorly armed proles)
+        unarmed_ratio = max(0, members - arms * 50) / max(members, 1)
+        n_militia = min(12, int(unarmed_ratio * members / 60))
+        n_militia = max(2, int(n_militia * rng.uniform(0.8, 1.2)))
+
+        # Create BLF garrison in London (cluster 0) as faction 2
+        blf_units = []
+        for _ in range(n_infantry):
+            blf_units.append(create_unit(CowUnitType.INFANTRY, 1, 2, 0))  # faction 2
+        for _ in range(n_militia):
+            blf_units.append(create_unit(CowUnitType.MILITIA, 1, 2, 0))
+
+        # Add 1 engineer (barricade builders) if arms >= 3
+        if arms >= 3:
+            blf_units.append(create_unit(CowUnitType.ENGINEER, 1, 2, 0))
+
+        # Place in London garrison alongside existing Oceania troops → CONTESTED
+        existing = game.land.garrisons.get(0, [])
+        game.land.garrisons[0] = existing + blf_units
+
+        # Register faction 2
+        game.faction_names[2] = "British Liberation Front"
+        if 2 not in game.faction_scores:
+            game.faction_scores[2] = 0.0
+
+        feedback["blf_uprising"] = {
+            "infantry": n_infantry, "militia": n_militia,
+            "total_units": len(blf_units), "arms_used": arms,
+            "london_contested": True,
+        }
 
     # 7. Land combat (resolve battles in contested sectors)
     if game.land is not None:
@@ -2184,6 +2244,14 @@ def generate_visible_events(game: GameState, feedback: Dict[str, Any]) -> str:
         elif zone.mines.density > 0.1:
             events.append(f"Mine warning in {zone.name}. Minesweepers working under fire.")
             break
+
+    # ── BLF uprising (one-time massive event) ──────────────────────── #
+    blf_up = feedback.get("blf_uprising", {})
+    if blf_up.get("london_contested"):
+        n = blf_up.get("total_units", 0)
+        events.append(f"BREAKING: REVOLUTION IN LONDON! The British Liberation Front rises! {n} armed units seize the docks, barricade the bridges!")
+        events.append("Winston Smith addresses the crowd from the rubble of Victory Mansions: 'We are the 85 percent!'")
+        events.append("The Inner Party retreats to Whitehall. Telescreen broadcasts cut to static. Big Brother's face flickers and dies.")
 
     # ── Land battles (ground combat in contested sectors) ────────── #
     land_fb = feedback.get("land", {})
