@@ -1,0 +1,502 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# WAR OVER AIR STRIP ONE — 1984 (George Orwell)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Fictional scenario: Oceania vs Eurasia across the English Channel.
+# Southern England (Oceania / Ingsoc) defends against Northern France
+# (Eurasia / Neo-Bolshevism) in a grinding, ideological total war.
+#
+# The war is not meant to be won. It is meant to be continuous.
+# — Emmanuel Goldstein, "The Theory and Practice of Oligarchical Collectivism"
+#
+# 12 sectors across the Channel theatre:
+#
+#   OCEANIA (Southern England) — Totalitarian surveillance state
+#     0  London (Airstrip One HQ)    — Ministries, Thought Police, proles
+#     1  Dover Fortress               — Channel defense, radar arrays, AA guns
+#     2  Portsmouth Naval Base         — Royal Navy remnant, shipyards
+#     3  Southampton Docks             — Supply port, factory district
+#     4  Canterbury Garrison           — Inland reserve, training camps
+#     5  Brighton Coastal Defense      — Secondary shore batteries, radar
+#
+#   EURASIA (Northern France) — Neo-Bolshevik war machine
+#     6  Calais Beachhead              — Forward staging area, invasion prep
+#     7  Dunkirk Naval Station         — Eurasian fleet base, submarines
+#     8  Amiens Supply Hub             — Rail junction, logistics nexus
+#     9  Rouen Industrial Zone         — Heavy industry, tank production
+#    10  Paris Command Center          — Eurasia Western Front HQ
+#    11  Lille Military District        — Training grounds, reserve forces
+#
+# Key features:
+#   - English Channel as natural barrier (adjacency only via sea routes)
+#   - Regime types: Oceania = TOTALITARIAN, Eurasia = COMMUNIST
+#   - War economy with 7 sectors, 12 resources, Leontief production
+#   - Manpower with 15 conscription laws, regime-gated
+#   - Propaganda and Thought Police mechanics via media_bias
+#   - Perpetual war: neither side is meant to achieve total victory
+#   - Prole unrest as hidden instability for Oceania
+
+# ── Training config ─────────────────────────────────────────────────────── #
+training:
+  total_timesteps: 3000000
+  n_envs: 8
+  mode: curriculum
+  use_subproc: true
+  population: true
+  economy: true
+
+# ── GravitasParams overrides ─────────────────────────────────────────────── #
+params:
+  # Topology
+  n_clusters_min: 12
+  n_clusters_max: 12
+  dt: 0.01
+
+  # Stability — totalitarian states are stable but brittle
+  alpha_sigma: 0.04       # slow natural recovery
+  nu_sigma:    0.05       # moderate diffusion
+  beta_sigma:  1.60       # hazard strongly suppresses stability
+
+  # Resource dynamics
+  alpha_res:       0.04
+  hazard_res_cost: 0.18
+
+  # Military
+  max_military_total:      0.90
+  military_exh_coeff:      0.35
+  military_decay:          0.020
+  military_hazard_reduction: 0.45
+  military_sigma_boost:    0.15
+  military_tau_cost:       0.20    # occupation deeply erodes trust
+  military_phi_coeff:      0.12
+
+  # Trust / polarization — propaganda is everything
+  tau_decay:            0.02
+  alpha_pol:            0.08
+  beta_pol:             0.05
+  propaganda_pol_coeff: 0.25      # heavy propaganda effect (Minitrue)
+  psi_propaganda_cost:  0.15
+
+  # Exhaustion — perpetual war grinds down
+  alpha_exh:  0.06
+  beta_exh:   0.03
+
+  # Hawkes shock — rocket bombs, surprise offensives
+  hawkes_base_rate: 0.030
+  hawkes_alpha:     0.15
+  hawkes_beta:      0.30
+  shock_pareto_alpha: 2.0
+  shock_pareto_xmin:  0.12
+
+  # Diplomacy (inter-sector, not inter-faction — alliances within own side)
+  nu_alliance:      0.04
+  nu_res_alliance:  0.04
+  alpha_hostility:  0.05
+  alliance_decay:   0.004
+  diplomacy_shift:  0.08
+
+  # Media / propaganda — Minitrue controls everything
+  rho_bias:      0.92       # extreme state media control
+  beta_max_bias: 0.70       # massive distortion capability
+  media_autonomy: 0.10      # almost no independent media
+
+  # Reward weights
+  w_stability:            1.50
+  w_fragmentation:        0.70
+  w_polarization:         0.90
+  w_exhaustion:           2.00
+  w_resilience:           0.50
+  w_smoothness:           0.20
+  w_unsustainable:        2.50
+  w_resource_balance:     1.00
+  w_resource_critical:    1.50
+  w_resource_improvement: 0.40
+
+  # Termination
+  collapse_exhaustion:    0.95
+  collapse_hazard_mean:   1.80
+  collapse_polarization:  0.97
+  collapse_fragmentation: 0.95
+
+  # Episode length — long grinding war
+  max_steps: 600
+
+# ── Regime configuration ───────────────────────────────────────────────── #
+factions:
+  oceania:
+    regime_type: TOTALITARIAN
+    conscription_law: TOTAL_MOBILISATION
+    ideology: INGSOC
+    leader: "Big Brother"
+    description: "War is Peace. Freedom is Slavery. Ignorance is Strength."
+  eurasia:
+    regime_type: COMMUNIST
+    conscription_law: GENERAL_MOBILISATION
+    ideology: NEO_BOLSHEVISM
+    leader: "Supreme Marshal Kalinin"
+    description: "Death to the Imperialists. Workers of the world, unite."
+
+# ── War Economy config ─────────────────────────────────────────────────── #
+war_economy:
+  enabled: true
+  initial_stockpile: 70.0
+  oceania_manufacturing_priority: 0.65   # heavy military focus
+  eurasia_manufacturing_priority: 0.60
+
+# ── Operational sectors ──────────────────────────────────────────────────── #
+sectors:
+  # ════════════════════════════════════════════════════════════════════════ #
+  #   OCEANIA — Southern England                                            #
+  # ════════════════════════════════════════════════════════════════════════ #
+
+  - id: 0
+    name: London
+    side: Oceania
+    terrain: urban
+    description: >
+      Airstrip One headquarters. The Ministries of Truth, Peace, Love, and
+      Plenty tower over the prole districts. Victory Mansions house Outer
+      Party members. Constant surveillance. Rocket bombs fall nightly.
+    initial_state:
+      sigma:    0.55     # stable on surface, brittle underneath
+      hazard:   0.20     # rocket bombs from Eurasia
+      resource: 0.70     # rationed but functional
+      military: 0.45     # Thought Police + garrison
+      trust:    0.35     # trust is fear
+      polar:    0.40     # proles simmer quietly
+    population: 0.85     # massive population (proles = 85%)
+    terrain_type: URBAN
+
+  - id: 1
+    name: Dover
+    side: Oceania
+    terrain: fortified
+    description: >
+      White Cliffs fortress. Heaviest coastal defenses in Oceania.
+      Radar arrays scan the Channel. Anti-aircraft batteries ring the port.
+      The narrowest crossing point — 33 km to Calais.
+    initial_state:
+      sigma:    0.60
+      hazard:   0.30     # constant shelling from Calais
+      resource: 0.55
+      military: 0.70     # heavily garrisoned
+      trust:    0.50
+      polar:    0.25
+    population: 0.30
+    terrain_type: URBAN   # fortified urban
+
+  - id: 2
+    name: Portsmouth
+    side: Oceania
+    terrain: urban
+    description: >
+      Naval base of the Oceanian Channel Fleet. Shipyards produce patrol
+      boats and coastal defense vessels. Submarine pens beneath the docks.
+    initial_state:
+      sigma:    0.55
+      hazard:   0.15
+      resource: 0.65
+      military: 0.55
+      trust:    0.45
+      polar:    0.30
+    population: 0.50
+    terrain_type: URBAN
+
+  - id: 3
+    name: Southampton
+    side: Oceania
+    terrain: urban
+    description: >
+      Major supply port and factory district. Produces Victory Gin,
+      Victory Cigarettes, and — more importantly — ammunition and vehicles.
+      Dockworkers are proles; factory output is high but morale is low.
+    initial_state:
+      sigma:    0.50
+      hazard:   0.15
+      resource: 0.75
+      military: 0.30
+      trust:    0.40
+      polar:    0.35
+    population: 0.60
+    terrain_type: URBAN
+
+  - id: 4
+    name: Canterbury
+    side: Oceania
+    terrain: open
+    description: >
+      Inland garrison and training grounds. New recruits from the prole
+      districts are processed here. The cathedral is now a Minipax depot.
+    initial_state:
+      sigma:    0.65
+      hazard:   0.05
+      resource: 0.60
+      military: 0.40
+      trust:    0.55
+      polar:    0.20
+    population: 0.40
+    terrain_type: OPEN
+
+  - id: 5
+    name: Brighton
+    side: Oceania
+    terrain: open
+    description: >
+      Secondary coastal defense position. Shore batteries and observation
+      posts. The old pier is a minefield. Prole fishing boats conscripted
+      as coastal patrol.
+    initial_state:
+      sigma:    0.55
+      hazard:   0.10
+      resource: 0.50
+      military: 0.35
+      trust:    0.45
+      polar:    0.25
+    population: 0.35
+    terrain_type: OPEN
+
+  # ════════════════════════════════════════════════════════════════════════ #
+  #   EURASIA — Northern France                                             #
+  # ════════════════════════════════════════════════════════════════════════ #
+
+  - id: 6
+    name: Calais
+    side: Eurasia
+    terrain: open
+    description: >
+      Forward staging area for the invasion of Airstrip One. Massive
+      troop concentration. Artillery batteries pound Dover across the
+      Channel. Landing craft assembled in the harbour.
+    initial_state:
+      sigma:    0.45
+      hazard:   0.35     # constant counter-battery fire from Dover
+      resource: 0.50
+      military: 0.75     # invasion force massed
+      trust:    0.40
+      polar:    0.30
+    population: 0.40
+    terrain_type: OPEN
+
+  - id: 7
+    name: Dunkirk
+    side: Eurasia
+    terrain: urban
+    description: >
+      Eurasian Channel Fleet base. Destroyers, torpedo boats, and
+      submarine pens. Controls the eastern Channel approaches.
+      The ghost of 1940 haunts these beaches — but now it is reversed.
+    initial_state:
+      sigma:    0.50
+      hazard:   0.20
+      resource: 0.60
+      military: 0.60
+      trust:    0.45
+      polar:    0.25
+    population: 0.35
+    terrain_type: URBAN
+
+  - id: 8
+    name: Amiens
+    side: Eurasia
+    terrain: open
+    description: >
+      Critical rail junction connecting Paris to the Channel ports.
+      Supply depot for the Western Front. Warehouses stretch for
+      kilometres. The cathedral survived — barely.
+    initial_state:
+      sigma:    0.60
+      hazard:   0.10
+      resource: 0.80
+      military: 0.30
+      trust:    0.50
+      polar:    0.20
+    population: 0.45
+    terrain_type: PLAINS
+
+  - id: 9
+    name: Rouen
+    side: Eurasia
+    terrain: urban
+    description: >
+      Industrial heart of Eurasian Northern France. Steel mills, tank
+      factories, chemical plants line the Seine. Workers' collectives
+      produce T-series tanks and artillery shells around the clock.
+    initial_state:
+      sigma:    0.55
+      hazard:   0.10
+      resource: 0.75
+      military: 0.25
+      trust:    0.50
+      polar:    0.25
+    population: 0.55
+    terrain_type: URBAN
+
+  - id: 10
+    name: Paris
+    side: Eurasia
+    terrain: urban
+    description: >
+      Eurasia Western Front Command. The Eiffel Tower is a radio mast.
+      The Louvre is a ammunition depot. Commissars manage the war from
+      the Palais. Workers march in the streets singing party anthems.
+    initial_state:
+      sigma:    0.60
+      hazard:   0.05     # deep rear, safe from Oceanian rockets
+      resource: 0.70
+      military: 0.40
+      trust:    0.55
+      polar:    0.30
+    population: 0.80
+    terrain_type: URBAN
+
+  - id: 11
+    name: Lille
+    side: Eurasia
+    terrain: open
+    description: >
+      Training grounds and reserve depot. Fresh conscripts from the
+      Eurasian heartland arrive here before deployment to the Channel.
+      Coal mines nearby fuel the war effort.
+    initial_state:
+      sigma:    0.65
+      hazard:   0.05
+      resource: 0.65
+      military: 0.45
+      trust:    0.50
+      polar:    0.20
+    population: 0.45
+    terrain_type: PLAINS
+
+# ── Adjacency / Logistics Links ──────────────────────────────────────────── #
+# The English Channel separates the two sides.
+# Only Dover↔Calais and Portsmouth↔Dunkirk have cross-channel links
+# (representing sea lanes that can be contested/blockaded).
+
+logistics_links:
+  # Oceania internal
+  - { from: 0, to: 1, type: road }      # London → Dover
+  - { from: 0, to: 4, type: road }      # London → Canterbury
+  - { from: 0, to: 3, type: rail }      # London → Southampton
+  - { from: 0, to: 5, type: road }      # London → Brighton
+  - { from: 1, to: 4, type: road }      # Dover → Canterbury
+  - { from: 1, to: 5, type: road }      # Dover → Brighton
+  - { from: 2, to: 3, type: road }      # Portsmouth → Southampton
+  - { from: 2, to: 5, type: road }      # Portsmouth → Brighton
+  - { from: 3, to: 5, type: road }      # Southampton → Brighton
+  - { from: 4, to: 5, type: road }      # Canterbury → Brighton
+
+  # Eurasia internal
+  - { from: 6, to: 7, type: road }      # Calais → Dunkirk
+  - { from: 6, to: 8, type: road }      # Calais → Amiens
+  - { from: 6, to: 11, type: road }     # Calais → Lille
+  - { from: 7, to: 11, type: road }     # Dunkirk → Lille
+  - { from: 8, to: 9, type: rail }      # Amiens → Rouen
+  - { from: 8, to: 10, type: rail }     # Amiens → Paris
+  - { from: 8, to: 11, type: road }     # Amiens → Lille
+  - { from: 9, to: 10, type: rail }     # Rouen → Paris
+  - { from: 10, to: 11, type: rail }    # Paris → Lille
+
+  # Cross-Channel (sea lanes — blockadable)
+  - { from: 1, to: 6, type: sea }       # Dover ↔ Calais (33 km)
+  - { from: 2, to: 7, type: sea }       # Portsmouth ↔ Dunkirk (wider crossing)
+
+# ── CoW Military Configuration ───────────────────────────────────────────── #
+cow_military:
+  oceania_income: [3.0, 3.5, 2.5, 2.0, 1.5]
+  eurasia_income: [3.5, 3.0, 2.5, 2.0, 1.5]
+
+  objectives:
+    - objective_id: 0
+      name: "Capture London"
+      objective_type: capture
+      target_cluster_id: 0
+      faction_id: 1          # Eurasia wants London
+      required_strength: 35
+
+    - objective_id: 1
+      name: "Hold Dover"
+      objective_type: hold
+      target_cluster_id: 1
+      faction_id: 0          # Oceania must hold Dover
+      required_strength: 20
+
+    - objective_id: 2
+      name: "Capture Calais"
+      objective_type: capture
+      target_cluster_id: 6
+      faction_id: 0          # Oceania counter-invasion
+      required_strength: 30
+
+    - objective_id: 3
+      name: "Defend Paris"
+      objective_type: hold
+      target_cluster_id: 10
+      faction_id: 1          # Eurasia must hold Paris
+      required_strength: 25
+
+    - objective_id: 4
+      name: "Channel Supremacy"
+      objective_type: control_route
+      target_cluster_id: 1    # Dover (controls the narrows)
+      faction_id: 0
+      required_strength: 15
+
+# ── Shock Events (Orwellian) ─────────────────────────────────────────────── #
+shock_events:
+  - name: "Rocket Bomb Barrage"
+    description: "V-rockets rain on London. Prole districts devastated."
+    target_clusters: [0]
+    hazard_spike: 0.25
+    resource_drain: 0.10
+    trigger_step_interval: 80
+
+  - name: "Channel Storm"
+    description: "Gale-force winds close the Channel. No crossings possible."
+    target_clusters: [1, 6]
+    hazard_spike: 0.10
+    resource_drain: 0.05
+    trigger_step_interval: 120
+
+  - name: "Prole Uprising"
+    description: "If the proles ever became conscious... but they never do."
+    target_clusters: [0, 3]
+    hazard_spike: 0.15
+    polar_spike: 0.20
+    trust_drain: 0.15
+    trigger_step_interval: 200
+
+  - name: "Eurasia Offensive"
+    description: "Eurasian forces mass for a Channel crossing attempt."
+    target_clusters: [6, 7]
+    military_boost: 0.15
+    resource_drain: 0.08
+    trigger_step_interval: 150
+
+  - name: "Two Minutes Hate"
+    description: "Mandatory propaganda session. Goldstein's face on the telescreen."
+    target_clusters: [0, 1, 2, 3, 4, 5]
+    polar_spike: -0.05   # temporarily reduces polarization (unified hate)
+    trust_drain: -0.02   # trust in Party increases
+    trigger_step_interval: 50
+
+  - name: "Thought Police Purge"
+    description: "Thoughtcrime does not entail death. Thoughtcrime IS death."
+    target_clusters: [0, 4]
+    hazard_spike: 0.08
+    polar_spike: -0.10   # fear suppresses dissent
+    trust_drain: 0.10    # but trust in institutions collapses
+    trigger_step_interval: 100
+
+  - name: "Factory Sabotage"
+    description: "Eurasian agents or prole resistance damage Southampton factories."
+    target_clusters: [3, 9]
+    resource_drain: 0.15
+    hazard_spike: 0.10
+    trigger_step_interval: 180
+
+  - name: "Eastasia Switches Sides"
+    description: "We have always been at war with Eastasia. Or have we?"
+    target_clusters: [10, 11]
+    hazard_spike: 0.12
+    polar_spike: 0.15
+    trigger_step_interval: 300

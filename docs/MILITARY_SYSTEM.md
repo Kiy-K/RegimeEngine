@@ -1,6 +1,15 @@
 # Military System Guide
 
-## Overview
+> **NOTE**: This document describes the legacy Call of War-style ground unit system (`extensions/military/`).
+> The **Air Strip One scenario** uses separate naval and air force systems:
+> - **Naval**: `extensions/naval/` — 14 ship classes, 6 sea zones, Lanchester combat, 3 invasion types (PREPARED/RECKLESS/AIRBORNE)
+> - **Air Force**: `extensions/air_force/` — 10 aircraft types, 7 bases per side, air zone control
+> - **Manpower**: `extensions/war_economy/manpower.py` — 15 conscription laws, training pipeline
+> - **Population**: `extensions/pop/pop_v2.py` — Real 1958 census numbers, 1984 social classes, 8 job types
+>
+> See [AIRSTRIP_ONE_SYSTEMS.md](AIRSTRIP_ONE_SYSTEMS.md) for the complete current military documentation.
+
+## Legacy Overview
 
 The GRAVITAS Engine features a comprehensive Call of War-style military system with **34 distinct unit types**, **advanced unit traits**, and **physics-driven combat**. This system provides realistic tactical depth while maintaining compatibility with reinforcement learning training.
 

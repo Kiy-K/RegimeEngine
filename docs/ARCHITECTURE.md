@@ -36,12 +36,20 @@ GRAVITAS Engine is organized into three layers: the **core simulation** (`gravit
 │                              └──────────┘                   │
 ├─────────────────────────────────────────────────────────────┤
 │              Extensions (extensions/)                        │
-│   ┌────────────────────┐  ┌──────────────────────┐         │
-│   │ military/          │  │ pop/                 │         │
-│   │ wrapper, dynamics  │  │ PopWrapper           │         │
-│   │ tactics, units     │  │ demographics         │         │
-│   │ political_interface│  │                      │         │
-│   └────────────────────┘  └──────────────────────┘         │
+│   ┌──────────────┐ ┌─────────────┐ ┌──────────────┐        │
+│   │ naval/       │ │ air_force/  │ │ resistance/  │        │
+│   │ 14 ship cls  │ │ 10 ac types │ │ BLF 7 levels │        │
+│   │ 6 sea zones  │ │ 7 bases/side│ │ Winston Smith│        │
+│   │ 3 inv types  │ │             │ │              │        │
+│   ├──────────────┤ ├─────────────┤ ├──────────────┤        │
+│   │ economy_v2/  │ │ pop/        │ │ intelligence/│        │
+│   │ 10 factories │ │ real numbers│ │ fog of war   │        │
+│   │ GDP model    │ │ 1984 classes│ │ espionage    │        │
+│   ├──────────────┤ ├─────────────┤ ├──────────────┤        │
+│   │ research/    │ │ governance/ │ │ war_economy/ │        │
+│   │ 6×5 tech tree│ │ budget+corr │ │ legacy model │        │
+│   │ prerequisites│ │ bureaucracy │ │              │        │
+│   └──────────────┘ └─────────────┘ └──────────────┘        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
