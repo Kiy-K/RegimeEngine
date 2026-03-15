@@ -56,7 +56,7 @@ SECTOR_TERRAIN: Dict[int, CowTerrain] = {
     15: CowTerrain.URBAN,      # Glasgow
     16: CowTerrain.PLAINS,     # Dublin
     17: CowTerrain.URBAN,      # Belfast
-    # Eurasia — France + Benelux
+    # Eurasia — France + Benelux + Netherlands
     18: CowTerrain.PLAINS,     # Calais
     19: CowTerrain.PLAINS,     # Dunkirk
     20: CowTerrain.PLAINS,     # Le Havre
@@ -66,11 +66,14 @@ SECTOR_TERRAIN: Dict[int, CowTerrain] = {
     24: CowTerrain.PLAINS,     # Lille
     25: CowTerrain.URBAN,      # Brussels
     26: CowTerrain.URBAN,      # Antwerp
-    27: CowTerrain.URBAN,      # Paris
-    28: CowTerrain.PLAINS,     # Orleans
-    29: CowTerrain.URBAN,      # Lyon
-    30: CowTerrain.PLAINS,     # Brest
-    31: CowTerrain.PLAINS,     # Bordeaux
+    27: CowTerrain.URBAN,      # Rotterdam (Europoort)
+    28: CowTerrain.URBAN,      # Amsterdam
+    29: CowTerrain.URBAN,      # Luxembourg
+    30: CowTerrain.URBAN,      # Paris
+    31: CowTerrain.PLAINS,     # Orleans
+    32: CowTerrain.URBAN,      # Lyon
+    33: CowTerrain.PLAINS,     # Brest
+    34: CowTerrain.PLAINS,     # Bordeaux
 }
 
 
@@ -153,12 +156,18 @@ def initialize_land(cluster_owners: Dict[int, int]) -> LandWorld:
                 units.extend([create_unit(CowUnitType.INFANTRY, 2, 1, cid) for _ in range(3)])
                 units.append(create_unit(CowUnitType.MEDIUM_TANK, 1, 1, cid))
                 units.append(create_unit(CowUnitType.ARTILLERY, 1, 1, cid))
-            elif cid == 27:  # Paris — HQ
+            elif cid in (27, 28):  # Rotterdam/Amsterdam — Dutch industrial
+                units.extend([create_unit(CowUnitType.INFANTRY, 2, 1, cid) for _ in range(2)])
+                units.append(create_unit(CowUnitType.MOTORIZED_INFANTRY, 1, 1, cid))
+                units.append(create_unit(CowUnitType.ANTI_AIR, 1, 1, cid))
+            elif cid == 29:  # Luxembourg — quiet rear
+                units.extend([create_unit(CowUnitType.MILITIA, 1, 1, cid) for _ in range(2)])
+            elif cid == 30:  # Paris — HQ
                 units.extend([create_unit(CowUnitType.GUARDS_INFANTRY, 2, 1, cid) for _ in range(3)])
                 units.extend([create_unit(CowUnitType.ANTI_AIR, 2, 1, cid) for _ in range(2)])
                 units.extend([create_unit(CowUnitType.ARTILLERY, 2, 1, cid) for _ in range(2)])
                 units.append(create_unit(CowUnitType.HEAVY_TANK, 1, 1, cid))
-            elif cid in (25, 26):  # Benelux — mobile reserves
+            elif cid in (25, 26):  # Belgium — mobile reserves
                 units.extend([create_unit(CowUnitType.MOTORIZED_INFANTRY, 1, 1, cid) for _ in range(2)])
                 units.append(create_unit(CowUnitType.LIGHT_TANK, 1, 1, cid))
             else:  # Rear sectors

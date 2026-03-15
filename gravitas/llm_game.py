@@ -229,11 +229,11 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         "Calais", "Dunkirk", "Le_Havre", "Cherbourg",
         # Eurasia — Northern France (22-24)
         "Amiens", "Rouen", "Lille",
-        # Eurasia — Benelux (25-26)
-        "Brussels", "Antwerp",
-        # Eurasia — Central France (27-29)
+        # Eurasia — Benelux (25-29)
+        "Brussels", "Antwerp", "Rotterdam", "Amsterdam", "Luxembourg",
+        # Eurasia — Central France (30-32)
         "Paris", "Orleans", "Lyon",
-        # Eurasia — Atlantic France (30-31)
+        # Eurasia — Atlantic France (33-34)
         "Brest", "Bordeaux",
     ]
     terrain_types = [
@@ -244,17 +244,17 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         "OPEN",                                                     # East Anglia
         "URBAN", "URBAN",                                           # Scotland
         "URBAN", "URBAN",                                           # Ireland
-        # Eurasia (14)
+        # Eurasia (17)
         "OPEN", "URBAN", "URBAN", "URBAN",                         # Channel
         "PLAINS", "URBAN", "PLAINS",                                # N France
-        "URBAN", "URBAN",                                           # Benelux
+        "URBAN", "URBAN", "URBAN", "URBAN", "URBAN",               # Benelux (Brussels, Antwerp, Rotterdam, Amsterdam, Luxembourg)
         "URBAN", "PLAINS", "URBAN",                                 # Central
         "URBAN", "PLAINS",                                          # Atlantic
     ]
     cluster_owners = {}
     for i in range(18):
         cluster_owners[i] = 0   # Oceania
-    for i in range(18, 32):
+    for i in range(18, 35):
         cluster_owners[i] = 1   # Eurasia
 
     population = np.array([
@@ -268,7 +268,7 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         # Eurasia
         0.40, 0.35, 0.30, 0.25,                 # Channel front
         0.45, 0.55, 0.45,                         # N France
-        0.65, 0.50,                               # Benelux
+        0.65, 0.50, 0.65, 0.70, 0.30,            # Benelux (Brussels, Antwerp, Rotterdam, Amsterdam, Luxembourg)
         0.80, 0.40, 0.60,                         # Central (Paris big)
         0.30, 0.35,                               # Atlantic
     ], dtype=np.float64)
@@ -308,16 +308,19 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         [0.60, 0.10, 0.80, 0.30, 0.50, 0.20],  # 22 Amiens — rail junction
         [0.55, 0.10, 0.75, 0.25, 0.50, 0.25],  # 23 Rouen — steel mills
         [0.65, 0.05, 0.65, 0.45, 0.50, 0.20],  # 24 Lille — reserves + coal
-        # ── EURASIA — Benelux ─────────────────────────────────────────── #
+        # ── EURASIA — Benelux (expanded: Belgium + Netherlands + Luxembourg) ── #
         [0.60, 0.05, 0.70, 0.50, 0.50, 0.20],  # 25 Brussels — Benelux Command
-        [0.55, 0.08, 0.75, 0.45, 0.48, 0.22],  # 26 Antwerp — port, North Sea
-        # ── EURASIA — Central France ──────────────────────────────────── #
-        [0.65, 0.05, 0.70, 0.40, 0.55, 0.30],  # 27 Paris — Command HQ
-        [0.68, 0.03, 0.75, 0.25, 0.52, 0.18],  # 28 Orleans — Loire logistics
-        [0.70, 0.02, 0.80, 0.20, 0.55, 0.15],  # 29 Lyon — southern industry
-        # ── EURASIA — Atlantic France ─────────────────────────────────── #
-        [0.55, 0.08, 0.55, 0.50, 0.45, 0.25],  # 30 Brest — sub pens
-        [0.62, 0.03, 0.65, 0.25, 0.50, 0.20],  # 31 Bordeaux — reserves
+        [0.55, 0.08, 0.75, 0.45, 0.48, 0.22],  # 26 Antwerp — port, North Sea fleet
+        [0.58, 0.10, 0.80, 0.55, 0.50, 0.20],  # 27 Rotterdam — Europoort, North Sea Fleet Pride
+        [0.62, 0.05, 0.70, 0.35, 0.52, 0.18],  # 28 Amsterdam — trade, finance, industry
+        [0.65, 0.02, 0.60, 0.20, 0.55, 0.15],  # 29 Luxembourg — steel, quiet rear area
+        # ── EURASIA — Central France ────────────────────────────────────── #
+        [0.65, 0.05, 0.70, 0.40, 0.55, 0.30],  # 30 Paris — Command HQ
+        [0.68, 0.03, 0.75, 0.25, 0.52, 0.18],  # 31 Orleans — Loire logistics
+        [0.70, 0.02, 0.80, 0.20, 0.55, 0.15],  # 32 Lyon — southern industry
+        # ── EURASIA — Atlantic France ───────────────────────────────────── #
+        [0.55, 0.08, 0.55, 0.50, 0.45, 0.25],  # 33 Brest — sub pens
+        [0.62, 0.03, 0.65, 0.25, 0.50, 0.20],  # 34 Bordeaux — reserves
     ], dtype=np.float64)
 
     n = len(cluster_names)
@@ -363,8 +366,8 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
                   "FLEET_SUBMARINE", "FLEET_SUBMARINE",
                   "TRANSPORT", "TRANSPORT", "TRANSPORT", "SUPPLY_SHIP"],
          }},
-        # Zone 2: North Sea (500km) — Liverpool/Leeds/Edinburgh↔Antwerp
-        {"name": "North Sea", "connected_clusters": [11, 12, 14, 26],
+        # Zone 2: North Sea (500km) — Liverpool/Leeds/Edinburgh↔Antwerp/Rotterdam/Amsterdam
+        {"name": "North Sea", "connected_clusters": [11, 12, 14, 26, 27, 28],
          "width_km": 500, "adjacent_zones": [1, 3],
          "initial_fleets": {
              0: ["LIGHT_CRUISER", "DESTROYER", "DESTROYER",
@@ -372,7 +375,13 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
              1: ["HEAVY_CRUISER", "LIGHT_CRUISER",
                   "DESTROYER", "DESTROYER", "DESTROYER",
                   "FLEET_SUBMARINE", "FLEET_SUBMARINE", "FLEET_SUBMARINE",
-                  "COASTAL_SUBMARINE", "MINELAYER", "SUPPLY_SHIP"],
+                  "COASTAL_SUBMARINE", "MINELAYER", "SUPPLY_SHIP",
+                  # Rotterdam detachment — Pride of the North Sea Fleet
+                  # (Soviet-style Baltic Fleet heritage, now based at Europoort)
+                  "BATTLECRUISER", "HEAVY_CRUISER",
+                  "DESTROYER", "DESTROYER",
+                  "FLEET_SUBMARINE", "FLEET_SUBMARINE",
+                  "TRANSPORT", "SUPPLY_SHIP"],
          }},
         # Zone 3: Irish Sea (300km) — Dublin/Belfast↔Liverpool/Glasgow
         {"name": "Irish Sea", "connected_clusters": [16, 17, 11, 15],
@@ -386,7 +395,7 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
              1: ["FLEET_SUBMARINE", "COASTAL_SUBMARINE"],
          }},
         # Zone 4: Bay of Biscay (600km) — Plymouth↔Brest/Bordeaux/Cherbourg
-        {"name": "Bay of Biscay", "connected_clusters": [7, 21, 30, 31],
+        {"name": "Bay of Biscay", "connected_clusters": [7, 21, 33, 34],
          "width_km": 600, "adjacent_zones": [1, 5],
          "initial_fleets": {
              0: ["LIGHT_CRUISER", "DESTROYER", "DESTROYER",
@@ -398,7 +407,7 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
                   "SUPPLY_SHIP"],
          }},
         # Zone 5: North Atlantic (open ocean) — convoy routes, Brest subs
-        {"name": "North Atlantic", "connected_clusters": [16, 15, 30],
+        {"name": "North Atlantic", "connected_clusters": [16, 15, 33],
          "width_km": 2000, "adjacent_zones": [3, 4],
          "initial_fleets": {
              0: ["LIGHT_CRUISER", "DESTROYER_ESCORT", "DESTROYER_ESCORT",
@@ -443,7 +452,7 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
                 "radar_clusters": [1, 5, 0, 11, 2, 13, 14],
             },
             1: {
-                "base_clusters": [27, 23, 18, 25, 26, 30, 29],
+                "base_clusters": [30, 23, 18, 25, 27, 33, 32],
                 "squadrons": [
                     # Channel Air Army: 14 squadrons
                     {"type": "AIR_SUPERIORITY", "count": 6},
