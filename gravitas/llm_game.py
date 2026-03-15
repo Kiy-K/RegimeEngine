@@ -80,6 +80,9 @@ from extensions.governance.budget_system import (
     GovernanceWorld, initialize_governance, step_governance,
     apply_budget_action, governance_summary,
 )
+from extensions.military.land_bridge import (
+    LandWorld, initialize_land, step_land, land_summary,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════ #
@@ -97,6 +100,7 @@ class GameState:
     invasions: List[InvasionPlan] = field(default_factory=list)
     resistance: Optional[BLFState] = None   # British Liberation Front
     intelligence: Optional[Any] = None       # IntelWorld — fog of war + espionage
+    land: Optional[Any] = None               # LandWorld — per-sector garrisons (CoW units)
     weather: Optional[Any] = None              # GameWeather — land/sea/air conditions
     economy: Optional[Any] = None              # EconomyWorld — GDP, factories, population
     pop: Optional[Any] = None                  # PopWorld — realistic population (real numbers)
@@ -461,6 +465,7 @@ def create_game(seed: int = 42, max_turns: int = 100) -> GameState:
         air=air,
         resistance=initialize_resistance(rng),
         intelligence=initialize_intelligence([0, 1], cluster_owners, n, rng),
+        land=initialize_land(cluster_owners),
         weather=initialize_game_weather(n, 6, rng),
         economy=initialize_economy_v2(n, cluster_owners, population, rng),
         pop=initialize_pop_v2(n, cluster_owners, rng),
@@ -589,23 +594,32 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
             game.cluster_data[0, 4] += res_fb.get("trust_delta_london", 0.0)
             game.cluster_data[0] = np.clip(game.cluster_data[0], 0.0, 1.0)
 
-    # 7. Intelligence & Espionage
+    # 7. Land combat (resolve battles in contested sectors)
+    if game.land is not None:
+        game.land, land_fb = step_land(game.land, game.cluster_owners, rng, dt)
+        feedback["land"] = land_fb
+
+    # 8. Intelligence & Espionage
     if game.intelligence is not None:
         game.intelligence, intel_fb = step_intelligence(
             game.intelligence, game.cluster_data, game.cluster_owners, rng, dt)
         feedback["intelligence"] = intel_fb
 
-    # 8. Scoring
+    # 9. Scoring
     for fid in [0, 1]:
         owned = sum(1 for cid, f in game.cluster_owners.items() if f == fid)
         ships = len(game.naval.faction_ships(fid))
         squadrons = len(game.air.faction_squadrons(fid))
+        land_units = 0
+        if game.land is not None:
+            for units in game.land.garrisons.values():
+                land_units += sum(1 for u in units if u.is_alive and u.faction_id == fid)
         total_stockpile = sum(
             float(np.sum(ce.resource_stockpile))
             for ce in game.war_economy.cluster_economies
             if game.cluster_owners.get(ce.cluster_id) == fid
         )
-        game.faction_scores[fid] += owned * 2.0 + ships * 0.5 + squadrons * 0.3 + total_stockpile * 0.01
+        game.faction_scores[fid] += owned * 2.0 + ships * 0.5 + squadrons * 0.3 + land_units * 0.4 + total_stockpile * 0.01
 
     game.turn += 1
     if game.turn >= game.max_turns:
@@ -843,6 +857,11 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
                 air_status.append(f"{cname}({ctrl_name})")
     if air_status:
         lines.append(f"  Air control: {', '.join(air_status[:6])}")
+
+    # ── Land Forces (CoW unit garrisons per sector) ────────────────────── #
+    if game.land is not None:
+        lines.append("")
+        lines.append("LAND FORCES: " + land_summary(game.land, faction_id, game.cluster_owners, game.cluster_names))
 
     # ── Invasions (show ALL own plans so LLM doesn't re-plan) ────────── #
     my_inv = [inv for inv in game.invasions if inv.is_active and inv.faction_id == faction_id]
@@ -2165,6 +2184,21 @@ def generate_visible_events(game: GameState, feedback: Dict[str, Any]) -> str:
         elif zone.mines.density > 0.1:
             events.append(f"Mine warning in {zone.name}. Minesweepers working under fire.")
             break
+
+    # ── Land battles (ground combat in contested sectors) ────────── #
+    land_fb = feedback.get("land", {})
+    if land_fb.get("battles", 0) > 0:
+        n_battles = land_fb["battles"]
+        if n_battles >= 3:
+            events.append("Heavy fighting on multiple fronts. Artillery thunder rolls across the countryside. Columns of smoke from burning vehicles.")
+        elif n_battles >= 2:
+            events.append("Ground combat reported in two sectors. Tank engines roar. Infantry advances under covering fire.")
+        else:
+            events.append("Skirmish reported near the front lines. Small arms fire. A patrol returns with prisoners.")
+        u0 = land_fb.get("units_lost_0", 0)
+        u1 = land_fb.get("units_lost_1", 0)
+        if u0 + u1 > 3:
+            events.append(f"Heavy casualties on the ground — {u0 + u1} units destroyed. Field hospitals overwhelmed.")
 
     # ── Invasion events (beachheads are VERY visible) ─────────────── #
     for inv in game.invasions:

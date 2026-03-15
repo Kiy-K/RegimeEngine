@@ -450,8 +450,20 @@ def run_benchmark(args: argparse.Namespace) -> Dict:
     blf_mem = game.resistance.total_members if game.resistance else 0
     winston_alive = game.resistance.winston.is_alive and not game.resistance.winston.is_captured if game.resistance else False
 
+    oc_land = 0
+    eu_land = 0
+    if game.land is not None:
+        for units in game.land.garrisons.values():
+            for u in units:
+                if u.is_alive:
+                    if u.faction_id == 0:
+                        oc_land += 1
+                    else:
+                        eu_land += 1
+
     print(f"  Naval: Oceania {oc_ships} ships | Eurasia {eu_ships} ships")
     print(f"  Air: Oceania {oc_sqs} squadrons | Eurasia {eu_sqs} squadrons")
+    print(f"  Land: Oceania {oc_land} units | Eurasia {eu_land} units")
     print(f"  BLF: escalation {blf_esc}/4 | {blf_mem} members | Winston {'alive' if winston_alive else 'CAPTURED/DEAD'}")
     active_inv = [inv for inv in game.invasions if inv.is_active]
     if active_inv:
