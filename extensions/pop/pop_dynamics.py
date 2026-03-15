@@ -25,6 +25,19 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
 
+try:
+    from numba import njit
+    _NUMBA = True
+except ImportError:
+    _NUMBA = False
+    def njit(*args, **kwargs):
+        """Fallback: no-op decorator when Numba is not installed."""
+        def _wrap(fn):
+            return fn
+        if args and callable(args[0]):
+            return args[0]
+        return _wrap
+
 from .pop_params import (
     ARCHETYPE_BASE_INCOME,
     ARCHETYPE_CLASS,
@@ -39,23 +52,102 @@ from .pop_state import PopAggregates, PopVector, WorldPopState, compute_aggregat
 POL_W = ARCHETYPE_POLITICAL_WEIGHT / ARCHETYPE_POLITICAL_WEIGHT.sum()  # Normalized once
 
 
-# ─────────────────────────────────────────────────────────────────────────── #
-# Vectorized NumPy implementations (no Numba — Cython handles hot paths)     #
-# ─────────────────────────────────────────────────────────────────────────── #
+# ───────────────────────────────────────────────────────────────────────────── #
+# Numba JIT kernels (pure array math — falls back to NumPy if no Numba)     #
+# ───────────────────────────────────────────────────────────────────────────── #
 
-def compute_gini(sizes, income):
-    """Vectorized Gini coefficient — O(P log P) via cumsum."""
+@njit(cache=True)
+def _gini_kernel(sizes, income):
+    """Numba-JIT Gini coefficient — pure loop, no Python overhead."""
+    P = sizes.shape[0]
     order = np.argsort(income)
     inc_ord = income[order]
     siz_ord = sizes[order]
+    cum_pop = 0.0
+    cum_inc = 0.0
+    total_inc = 0.0
+    for i in range(P):
+        total_inc += siz_ord[i] * inc_ord[i]
+    if total_inc < 1e-9:
+        total_inc = 1.0
+    lorenz_area = 0.0
+    for i in range(P):
+        cum_pop += siz_ord[i]
+        cum_inc += siz_ord[i] * inc_ord[i]
+        if i > 0:
+            lorenz_area += (cum_pop - 0.5 * siz_ord[i]) * siz_ord[i] * (cum_inc / total_inc)
+    gini = 1.0 - 2.0 * lorenz_area
+    return max(0.0, min(1.0, gini))
 
-    cum_pop = np.cumsum(siz_ord)
-    cum_inc = np.cumsum(siz_ord * inc_ord)
-    total_inc = cum_inc[-1] if cum_inc[-1] > 1e-9 else 1.0
 
-    lorenz_area = float(np.sum((cum_pop[:-1] + 0.5 * siz_ord[1:]) * siz_ord[1:] *
-                               (cum_inc[1:] / total_inc)))
-    return float(np.clip(1.0 - 2.0 * lorenz_area, 0.0, 1.0))
+@njit(cache=True)
+def _pop_ode_kernel(
+    satisfaction, radicalization, income, sizes, ethnic_shares,
+    rad_potential, ethnic_tension,
+    alpha_sat, beta_sat, alpha_rad, beta_rad,
+    income_growth_base, income_hazard_drain,
+    ethnic_tension_base, ethnic_tension_decay,
+    sat_floor, rad_ceiling,
+    cluster_sigma, cluster_hazard, cluster_trust, cluster_resource,
+    sys_polarization, sys_exhaustion, sys_coherence, dt,
+):
+    """Numba-JIT population ODE step — pure array math, no Python objects."""
+    P = satisfaction.shape[0]
+    act_gate = 1.0 - sys_exhaustion
+
+    # Mean income
+    mean_income = 0.0
+    for i in range(P):
+        mean_income += sizes[i] * income[i]
+    if mean_income < 1e-9:
+        mean_income = 1.0
+
+    new_sat = np.empty(P)
+    new_rad = np.empty(P)
+    new_inc = np.empty(P)
+
+    for i in range(P):
+        ir = income[i] / mean_income
+        # Satisfaction ODE
+        d_s = (alpha_sat * (ir - 1.0) * act_gate
+               - beta_sat * sys_polarization * (1.0 - cluster_trust)) * dt
+        new_sat[i] = max(sat_floor, min(1.0, satisfaction[i] + d_s))
+
+        # Radicalization ODE
+        unsat = max(0.0, 1.0 - satisfaction[i])
+        d_r = (alpha_rad * rad_potential[i] * unsat * (1.0 - sys_coherence)
+               - beta_rad * satisfaction[i] * cluster_trust) * dt
+        new_rad[i] = max(0.0, min(rad_ceiling, radicalization[i] + d_r))
+
+        # Income ODE
+        d_y = (income_growth_base * income[i] * cluster_resource * act_gate
+               - income_hazard_drain * cluster_hazard * income[i]) * dt
+        new_inc[i] = max(0.05, income[i] + d_y)
+
+    # Re-normalize income to mean=1
+    new_mean = 0.0
+    for i in range(P):
+        new_mean += sizes[i] * new_inc[i]
+    if new_mean > 1e-9:
+        for i in range(P):
+            new_inc[i] /= new_mean
+
+    # Ethnic tension ODE
+    frac = 0.0
+    for i in range(ethnic_shares.shape[0]):
+        frac += ethnic_shares[i] * ethnic_shares[i]
+    frac = 1.0 - frac
+    d_tension = (ethnic_tension_base * frac * sys_polarization
+                 - ethnic_tension_decay * cluster_sigma) * dt
+    new_tension = max(0.0, min(1.0, ethnic_tension + d_tension))
+
+    return new_sat, new_rad, new_inc, new_tension
+
+
+def compute_gini(sizes, income):
+    """Gini coefficient — JIT-compiled loop or NumPy fallback."""
+    return float(_gini_kernel(np.ascontiguousarray(sizes, dtype=np.float64),
+                              np.ascontiguousarray(income, dtype=np.float64)))
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
@@ -170,57 +262,30 @@ def step_pop_vector(
     All updates are clipped to valid ranges after integration.
     """
     P = params.n_archetypes
-    E = params.n_ethnic_groups
 
-    # ── Derived quantities ────────────────────────────────────────────────── #
-    mean_income = float(np.dot(pop.sizes, pop.income))
-    if mean_income < 1e-9:
-        mean_income = 1.0
-    income_ratio = pop.income / mean_income   # relative income per archetype
-
-    rad_potential = ARCHETYPE_RAD_POTENTIAL[:P]
-    act_gate      = 1.0 - sys_exhaustion        # exhaustion freezes all dynamics
-
-    # ── Satisfaction ODE ─────────────────────────────────────────────────── #
-    d_sat = (
-        params.alpha_sat * (income_ratio - 1.0) * act_gate
-        - params.beta_sat * sys_polarization * (1.0 - cluster_trust)
-    ) * dt
-    new_sat = np.clip(pop.satisfaction + d_sat, params.sat_floor, 1.0)
-
-    # ── Radicalization ODE ───────────────────────────────────────────────── #
-    unsat    = np.maximum(0.0, 1.0 - pop.satisfaction)
-    d_rad = (
-        params.alpha_rad * rad_potential * unsat * (1.0 - sys_coherence)
-        - params.beta_rad * pop.satisfaction * cluster_trust
-    ) * dt
-    new_rad = np.clip(pop.radicalization + d_rad, 0.0, params.rad_ceiling)
-
-    # ── Income ODE ───────────────────────────────────────────────────────── #
-    d_income = (
-        params.income_growth_base * pop.income * cluster_resource * act_gate
-        - params.income_hazard_drain * cluster_hazard * pop.income
-    ) * dt
-    new_income = np.maximum(0.05, pop.income + d_income)
-    # Re-normalize to mean=1 to prevent drift
-    new_mean = float(np.dot(pop.sizes, new_income))
-    if new_mean > 1e-9:
-        new_income = new_income / new_mean
-
-    # ── Ethnic tension ODE ───────────────────────────────────────────────── #
-    # Fractionalization from current ethnic shares
-    frac = float(1.0 - np.dot(pop.ethnic_shares, pop.ethnic_shares))
-    d_tension = (
-        params.ethnic_tension_base * frac * sys_polarization
-        - params.ethnic_tension_decay * cluster_sigma
-    ) * dt
-    new_tension = float(np.clip(pop.ethnic_tension + d_tension, 0.0, 1.0))
+    # ── JIT-compiled ODE kernel (pure array math, no Python overhead) ──── #
+    new_sat, new_rad, new_income, new_tension = _pop_ode_kernel(
+        np.ascontiguousarray(pop.satisfaction, dtype=np.float64),
+        np.ascontiguousarray(pop.radicalization, dtype=np.float64),
+        np.ascontiguousarray(pop.income, dtype=np.float64),
+        np.ascontiguousarray(pop.sizes, dtype=np.float64),
+        np.ascontiguousarray(pop.ethnic_shares, dtype=np.float64),
+        np.ascontiguousarray(ARCHETYPE_RAD_POTENTIAL[:P], dtype=np.float64),
+        pop.ethnic_tension,
+        params.alpha_sat, params.beta_sat,
+        params.alpha_rad, params.beta_rad,
+        params.income_growth_base, params.income_hazard_drain,
+        params.ethnic_tension_base, params.ethnic_tension_decay,
+        params.sat_floor, params.rad_ceiling,
+        cluster_sigma, cluster_hazard, cluster_trust, cluster_resource,
+        sys_polarization, sys_exhaustion, sys_coherence, dt,
+    )
 
     updated = pop.copy_with(
         satisfaction=new_sat,
         radicalization=new_rad,
         income=new_income,
-        ethnic_tension=new_tension,
+        ethnic_tension=float(new_tension),
     )
 
     # Soldier-specific morale adjustments
