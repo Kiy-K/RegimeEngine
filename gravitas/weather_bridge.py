@@ -248,11 +248,13 @@ def apply_weather_effects(
             # Storms reduce industrial output
             if cw.land.condition in (WeatherCondition.BLIZZARD, WeatherCondition.THUNDERSTORM,
                                      WeatherCondition.ICE_STORM):
-                # Reduce effective capacity temporarily
-                ce.infrastructure = max(0.3, ce.infrastructure - 0.005)
-            # Good weather slowly repairs
+                # Storms reduce factory efficiency temporarily
+                for f in ce.factories:
+                    f.efficiency = max(0.3, f.efficiency - 0.003)
+            # Good weather slowly restores efficiency
             elif cw.land.condition == WeatherCondition.CLEAR:
-                ce.infrastructure = min(1.0, ce.infrastructure + 0.001)
+                for f in ce.factories:
+                    f.efficiency = min(0.95, f.efficiency + 0.001)
 
     return feedback
 

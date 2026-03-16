@@ -565,7 +565,7 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
         policy = game.manpower_policies.get(owner)
         if policy is None:
             continue
-        food_ratio = game.economy.clusters[i].stockpile_ratio(Resource.PROCESSED_FOOD) if game.economy and i < len(game.economy.clusters) else 0.5
+        food_ratio = game.economy.clusters[i].stockpile_ratio("PROCESSED_FOOD") if game.economy and i < len(game.economy.clusters) else 0.5
         gdp = float(game.cluster_data[i, 2])  # use resource as GDP proxy
         game.manpower_clusters[i], mp_fb = step_manpower(mp, policy, game.cluster_data[i, 1], food_ratio, gdp, dt)
 
@@ -602,7 +602,7 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
         unemp_rates = {}
         if game.economy:
             for ce in game.economy.clusters:
-                food_ratios[ce.cluster_id] = ce.stockpile_ratio(Resource.PROCESSED_FOOD)
+                food_ratios[ce.cluster_id] = ce.stockpile_ratio("PROCESSED_FOOD")
         for i, mp in enumerate(game.manpower_clusters):
             unemp_rates[i] = mp.unemployment_rate
         eurasia_beachhead = any(inv.phase.name == "BEACHHEAD" and inv.faction_id == 1
@@ -2321,14 +2321,11 @@ def generate_visible_events(game: GameState, feedback: Dict[str, Any]) -> str:
         if ce.war_bond_active:
             factory_events.append(f"Factories in {name} running triple shifts. Workers exhausted but productive.")
         # Check for resource shortages
-        for r in [Resource.FUEL, Resource.STEEL, Resource.PROCESSED_FOOD]:
-            if ce.stockpile_ratio(r) < 0.1:
-                if r == Resource.FUEL:
-                    factory_events.append(f"Fuel shortage in {name}. Vehicles idle. The army requisitions civilian petrol.")
-                elif r == Resource.STEEL:
-                    factory_events.append(f"Steel shortage in {name}. The shipyard workers sit idle, smoking, waiting.")
-                elif r == Resource.PROCESSED_FOOD:
-                    factory_events.append(f"Food stores nearly empty in {name}. The canteen serves thin gruel.")
+        for r_name, r_msg in [("FUEL", "Fuel shortage. Vehicles idle. The army requisitions civilian petrol."),
+                                ("STEEL", "Steel shortage. The shipyard workers sit idle, smoking, waiting."),
+                                ("PROCESSED_FOOD", "Food stores nearly empty. The canteen serves thin gruel.")]:
+            if ce.stockpile_ratio(r_name) < 0.1:
+                factory_events.append(f"{r_msg.split('.')[0]} in {name}. {'.'.join(r_msg.split('.')[1:])}")
                 break
     for fe in factory_events[:2]:
         events.append(fe)
