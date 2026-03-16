@@ -71,38 +71,42 @@ class MinistryType(Enum):
     SCIENCE        = 4   # Research/Technology
     CONSTRUCTION   = 5   # Infrastructure/Building
     LABOUR         = 6   # Manpower/Conscription
+    ANTI_CORRUPTION = 7  # Anti-Corruption Agency — invisible investigation
 
 
 # Ministry names per faction
 OCEANIA_NAMES = {
-    MinistryType.PEACE:        "Ministry of Peace (Minipax)",
-    MinistryType.PLENTY:       "Ministry of Plenty (Miniplenty)",
-    MinistryType.TRUTH:        "Ministry of Truth (Minitrue)",
-    MinistryType.LOVE:         "Ministry of Love (Miniluv)",
-    MinistryType.SCIENCE:      "Ministry of Science",
-    MinistryType.CONSTRUCTION: "Ministry of Construction",
-    MinistryType.LABOUR:       "Ministry of Labour",
+    MinistryType.PEACE:           "Ministry of Peace (Minipax)",
+    MinistryType.PLENTY:          "Ministry of Plenty (Miniplenty)",
+    MinistryType.TRUTH:           "Ministry of Truth (Minitrue)",
+    MinistryType.LOVE:            "Ministry of Love (Miniluv)",
+    MinistryType.SCIENCE:         "Ministry of Science",
+    MinistryType.CONSTRUCTION:    "Ministry of Construction",
+    MinistryType.LABOUR:          "Ministry of Labour",
+    MinistryType.ANTI_CORRUPTION: "Anti-Corruption Agency",
 }
 
 EURASIA_NAMES = {
-    MinistryType.PEACE:        "People's Commissariat of Defense",
-    MinistryType.PLENTY:       "State Planning Committee (Gosplan)",
-    MinistryType.TRUTH:        "Propaganda Directorate",
-    MinistryType.LOVE:         "Committee for State Security",
-    MinistryType.SCIENCE:      "Academy of Sciences",
-    MinistryType.CONSTRUCTION: "Construction Committee",
-    MinistryType.LABOUR:       "Commissariat of Labour",
+    MinistryType.PEACE:           "People's Commissariat of Defense",
+    MinistryType.PLENTY:          "State Planning Committee (Gosplan)",
+    MinistryType.TRUTH:           "Propaganda Directorate",
+    MinistryType.LOVE:            "Committee for State Security",
+    MinistryType.SCIENCE:         "Academy of Sciences",
+    MinistryType.CONSTRUCTION:    "Construction Committee",
+    MinistryType.LABOUR:          "Commissariat of Labour",
+    MinistryType.ANTI_CORRUPTION: "Anti-Corruption Inspectorate",
 }
 
 # Maps MinistryType to BudgetCategory index (from governance)
 MINISTRY_TO_BUDGET = {
-    MinistryType.PEACE:        0,  # MILITARY
-    MinistryType.PLENTY:       1,  # PRODUCTION
-    MinistryType.SCIENCE:      2,  # RESEARCH
-    MinistryType.TRUTH:        3,  # WELFARE (propaganda = public mood management)
-    MinistryType.LOVE:         4,  # POLICE
-    MinistryType.CONSTRUCTION: 5,  # INFRASTRUCTURE
-    MinistryType.LABOUR:       6,  # DEBT_SERVICE (labour = workforce management)
+    MinistryType.PEACE:           0,  # MILITARY
+    MinistryType.PLENTY:          1,  # PRODUCTION
+    MinistryType.SCIENCE:         2,  # RESEARCH
+    MinistryType.TRUTH:           3,  # WELFARE (propaganda = public mood management)
+    MinistryType.LOVE:            4,  # POLICE
+    MinistryType.CONSTRUCTION:    5,  # INFRASTRUCTURE
+    MinistryType.LABOUR:          6,  # DEBT_SERVICE (labour = workforce management)
+    MinistryType.ANTI_CORRUPTION: 4,  # shares POLICE budget (internal affairs)
 }
 
 
@@ -164,6 +168,11 @@ class Ministry:
     total_tasks_completed: int = 0
     total_gdp_spent: float = 0.0
     turns_underfunded: int = 0
+
+    # Anti-Corruption Agency specific (invisible investigation bar)
+    investigation_progress: float = 0.0   # 0.0 → 1.0 — invisible to LLM player
+    investigation_target: float = 0.0     # how much corruption to reduce when complete
+    investigations_completed: int = 0     # total successful investigations
 
     @property
     def is_underfunded(self) -> bool:
@@ -237,6 +246,7 @@ def initialize_ministries(faction_ids: List[int]) -> MinistryWorld:
                     MinistryType.TRUTH: 0.90, MinistryType.LOVE: 0.95,
                     MinistryType.SCIENCE: 0.60, MinistryType.CONSTRUCTION: 0.70,
                     MinistryType.LABOUR: 0.80,
+                    MinistryType.ANTI_CORRUPTION: 0.50,  # Ingsoc: corruption IS the system
                 }
             else:  # Eurasia — communist: committee layers slow everything
                 eff_map = {
@@ -244,6 +254,7 @@ def initialize_ministries(faction_ids: List[int]) -> MinistryWorld:
                     MinistryType.TRUTH: 0.75, MinistryType.LOVE: 0.85,
                     MinistryType.SCIENCE: 0.65, MinistryType.CONSTRUCTION: 0.65,
                     MinistryType.LABOUR: 0.85,
+                    MinistryType.ANTI_CORRUPTION: 0.55,  # Eurasia: endemic but slightly better
                 }
             fm.ministries[mtype] = Ministry(
                 ministry_type=mtype,
@@ -496,6 +507,57 @@ def _generate_auto_tasks(ministry: Ministry, game: Any, fid: int, rng: np.random
             ministry.completed_tasks.append(f"Training pipeline: {total_training} recruits in progress")
         if budget < 2.0:
             ministry.budget_request_reason = "Training budget insufficient. Conscripts arriving untrained."
+
+    elif ministry.ministry_type == MinistryType.ANTI_CORRUPTION:
+        # ── Anti-Corruption Agency: invisible investigation progress ── #
+        # The investigation bar is INVISIBLE to the LLM player.
+        # Progress depends on: funding, efficiency, corruption level, random luck.
+        # When bar reaches 1.0: corruption is reduced, bar resets.
+        # Anti-exploit: progress is unpredictable, can't be gamed.
+
+        if game.governance is not None and fid in game.governance.factions:
+            corr = game.governance.factions[fid].corruption
+
+            # Base investigation speed: funding × efficiency × random
+            # More corruption = harder to investigate (bigger haystack)
+            corruption_difficulty = 1.0 + corr.current_rate * 2.0  # higher corruption = slower
+            random_factor = rng.uniform(0.3, 2.0)  # wildly unpredictable
+            funding_factor = min(2.0, budget / 5.0)  # more money = faster
+
+            progress_rate = (eff * funding_factor * random_factor) / corruption_difficulty * 0.08 * dt
+
+            # Sometimes investigations hit dead ends (random setback)
+            if rng.random() < 0.05:
+                ministry.investigation_progress = max(0.0, ministry.investigation_progress - 0.1)
+                ministry.problems.append("Investigation hit a dead end. Key witness recanted.")
+
+            ministry.investigation_progress += progress_rate
+
+            # Calculate target reduction (based on funding when investigation completes)
+            ministry.investigation_target = min(0.08, 0.02 + budget * 0.005) * eff
+
+            # Investigation complete!
+            if ministry.investigation_progress >= 1.0:
+                reduction = ministry.investigation_target * rng.uniform(0.6, 1.4)
+                corr.current_rate = max(corr.floor, corr.current_rate - reduction)
+                ministry.investigation_progress = 0.0
+                ministry.investigations_completed += 1
+                ministry.completed_tasks.append(
+                    f"Investigation #{ministry.investigations_completed} complete! "
+                    f"Corruption reduced by {reduction:.1%}. "
+                    f"New rate: {corr.current_rate:.1%}")
+            else:
+                # Report vague status (don't reveal exact progress)
+                if ministry.investigation_progress > 0.7:
+                    ministry.completed_tasks.append("Investigation nearing completion. Key evidence secured.")
+                elif ministry.investigation_progress > 0.4:
+                    ministry.completed_tasks.append("Investigation ongoing. Following leads.")
+                elif ministry.investigation_progress > 0.1:
+                    ministry.completed_tasks.append("Investigation in early stages. Gathering evidence.")
+
+            if budget < 1.0:
+                ministry.budget_request_reason = "Investigation STALLED — no funding for agents."
+                ministry.problems.append("⚠ Anti-corruption work halted. Increase POLICE budget.")
 
 
 def _generate_report(ministry: Ministry, game: Any, fid: int):

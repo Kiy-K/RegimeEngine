@@ -1121,7 +1121,7 @@ def summarize_turn(game: GameState, faction_id: int) -> str:
     lines.append("  Military: BUILD_SHIP class | BUILD_SQUADRON type | NAVAL_MISSION zone PATROL/ESCORT/BLOCKADE/RAID")
     lines.append("  Combat: STRATEGIC_BOMB city | CAS_SUPPORT city | ANTI_SHIP_STRIKE zone | SHORE_BOMBARD zone city | LAY_MINES zone | SWEEP_MINES zone")
     lines.append("  Economy: SET_MANUFACTURING 0-1 | BUILD_FACTORY type city | REPAIR_FACTORY city | ISSUE_WAR_BONDS city")
-    lines.append("  Budget: SET_BUDGET cat1 val1 cat2 val2... | ANTI_CORRUPTION")
+    lines.append("  Budget: SET_BUDGET cat1 val1 cat2 val2... (anti-corruption handled by ministry — fund POLICE budget)")
     lines.append("  Manpower: TRAIN_MILITARY city count | CONSCRIPT city count | MOBILIZE_RESERVES city")
     lines.append("  Intel: PLANT_SPY city | CODE_BREAK | COUNTER_INTEL | DECEPTION city")
     lines.append("  Research: RESEARCH branch (INDUSTRY/ELECTRONICS/NAVAL/AIR/LAND/DOCTRINE/NUCLEAR/ROCKETRY/CRYPTOGRAPHY/INFRASTRUCTURE)")
@@ -1340,7 +1340,8 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
                 actions.append({"type": "set_budget", "params": params})
 
             elif cmd in ("ANTI_CORRUPTION", "PURGE_CORRUPTION", "FIGHT_CORRUPTION"):
-                actions.append({"type": "anti_corruption"})
+                # Redirected to Anti-Corruption Agency ministry — no longer a player action
+                actions.append({"type": "noop"})
 
             elif cmd == "BUILD_FACTORY":
                 _VALID_FACTORIES = {"POWER_PLANT", "MIL_FACTORY", "CIVIL_FACTORY", "DOCKYARD",
@@ -1584,9 +1585,7 @@ def apply_actions(game: GameState, faction_id: int, actions: List[Dict[str, Any]
                 results.append(msg)
 
         elif t == "anti_corruption":
-            if game.governance is not None:
-                game.governance, msg = apply_budget_action(game.governance, faction_id, "ANTI_CORRUPTION", {})
-                results.append(msg)
+            results.append("Anti-corruption is handled by the Anti-Corruption Agency. Increase POLICE budget to fund investigations.")
 
         elif t == "research":
             if game.research is not None:
