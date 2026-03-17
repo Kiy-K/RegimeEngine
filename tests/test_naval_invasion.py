@@ -115,6 +115,8 @@ def test_invasion():
             assault_turns += 1
             print(f"  Turn {game.turn}: phase={inv.phase.name}, "
                   f"beachhead_str={inv.beachhead_strength:.2f}, "
+                  f"troops_landed={inv.troops_landed}, supply={inv.supply_line_intact}, "
+                  f"no_supply_turns={inv.steps_without_supply}, "
                   f"troops={inv.troops_embarked}")
 
         print(f"  → Transitioned to {inv.phase.name}")

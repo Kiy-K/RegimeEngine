@@ -596,7 +596,7 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
         updated_inv, inv_fb = step_invasion(inv, game.naval, defender_str, defender_fort, sea_state, rng, dt)
         game.invasions[idx] = updated_inv  # BUG FIX: write back updated invasion
 
-    # 5b. Process completed invasions — flip territory ownership
+    # 5b. Process completed invasions — flip territory ownership + convert troops to garrison
     for inv in game.invasions:
         if inv.phase.name == "COMPLETED":
             target = inv.target_cluster
@@ -605,12 +605,16 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
                 game.cluster_owners[target] = inv.faction_id
                 cname = game.cluster_names[target] if target < len(game.cluster_names) else f"C{target}"
                 fname = game.faction_names.get(inv.faction_id, f"F{inv.faction_id}")
+                # Convert troops_landed into garrison units (1 unit per 500 troops)
+                n_units = max(3, inv.troops_landed // 500)
+                n_infantry = max(2, int(n_units * 0.7))
+                n_militia = n_units - n_infantry
                 feedback.setdefault("territory_captured", []).append(
-                    f"{fname} captured {cname}! Territory flipped from owner {old_owner}.")
-                # Spawn garrison units for the conqueror
+                    f"{fname} captured {cname}! {inv.troops_landed} troops establish garrison "
+                    f"({n_infantry} infantry + {n_militia} militia).")
                 if game.land is not None:
-                    from extensions.military.land_bridge import _spawn_beachhead_units
-                    _spawn_beachhead_units(game.land, target, inv.faction_id, rng)
+                    from extensions.military.land_bridge import _spawn_beachhead_units_scaled
+                    _spawn_beachhead_units_scaled(game.land, target, inv.faction_id, n_infantry, n_militia, rng)
 
     # 6. BLF Resistance (only affects Oceania)
     if game.resistance is not None:

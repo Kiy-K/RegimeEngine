@@ -374,11 +374,14 @@ def step_invasion(
         # Beachhead strength grows with landed troops
         plan.beachhead_strength = min(1.0, plan.troops_landed / 2000.0)
 
-        # Shore bombardment bonus
-        # (handled externally — bombardment reduces defender_strength before this)
-
-        # Beachhead established when strength > 0.3
-        if plan.beachhead_strength > 0.3 and plan.troops_embarked <= 0:
+        # Beachhead SECURED: once strength >= 0.5, stop the meat grinder.
+        # Remaining embarked troops disembark safely (beach is ours).
+        if plan.beachhead_strength >= 0.5:
+            # Safe disembarkation — remaining troops land without combat losses
+            plan.troops_landed += plan.troops_embarked
+            plan.troops_embarked = 0
+            plan.phase = InvasionPhase.BEACHHEAD
+        elif plan.troops_embarked <= 0 and plan.beachhead_strength >= 0.3:
             plan.phase = InvasionPhase.BEACHHEAD
         elif plan.troops_embarked <= 0 and plan.beachhead_strength < 0.1:
             plan.phase = InvasionPhase.ABORTED  # failed to establish foothold
@@ -428,31 +431,36 @@ def step_invasion(
 
     # ── BEACHHEAD ─────────────────────────────────────────────────────── #
     elif plan.phase == InvasionPhase.BEACHHEAD:
-        # Check supply line
-        if plan.sea_zone_id < len(nw.sea_zones):
-            zone = nw.sea_zones[plan.sea_zone_id]
-            if zone.control == SeaZoneControl.DENIED:
-                plan.supply_line_intact = False
-            elif zone.control == SeaZoneControl.CONTROLLED and zone.controlling_faction != plan.faction_id:
-                plan.supply_line_intact = False
-            else:
-                plan.supply_line_intact = True
-
-        if not plan.supply_line_intact:
-            plan.steps_without_supply += 1
-            # Beachhead degrades without supply
-            plan.beachhead_strength = max(0.0,
-                plan.beachhead_strength - 0.02 * plan.steps_without_supply * dt)
-            if plan.beachhead_strength <= 0.05:
-                plan.phase = InvasionPhase.ABORTED  # beachhead collapsed
-        else:
-            plan.steps_without_supply = 0
-            # Beachhead strengthens with supply
-            plan.beachhead_strength = min(1.0, plan.beachhead_strength + 0.01 * dt)
-
-        # Completion: beachhead at full strength = permanent presence
-        if plan.beachhead_strength >= 0.9:
+        # Large army ashore = self-sustaining. Auto-complete if 2000+ troops landed.
+        if plan.troops_landed >= 2000:
+            plan.beachhead_strength = 1.0
             plan.phase = InvasionPhase.COMPLETED
+        else:
+            # Small beachhead needs sea supply to consolidate
+            if plan.sea_zone_id < len(nw.sea_zones):
+                zone = nw.sea_zones[plan.sea_zone_id]
+                if zone.control == SeaZoneControl.DENIED:
+                    plan.supply_line_intact = False
+                elif zone.control == SeaZoneControl.CONTROLLED and zone.controlling_faction != plan.faction_id:
+                    plan.supply_line_intact = False
+                else:
+                    plan.supply_line_intact = True
+
+            troop_buffer = min(1.0, plan.troops_landed / 1500.0)
+
+            if not plan.supply_line_intact:
+                plan.steps_without_supply += 1
+                degrade = 0.015 * plan.steps_without_supply * (1.0 - troop_buffer * 0.7) * dt
+                plan.beachhead_strength = max(0.0, plan.beachhead_strength - degrade)
+                if plan.beachhead_strength <= 0.05 and plan.steps_without_supply > 8:
+                    plan.phase = InvasionPhase.ABORTED
+            else:
+                plan.steps_without_supply = 0
+                growth = (0.05 + 0.04 * troop_buffer) * dt
+                plan.beachhead_strength = min(1.0, plan.beachhead_strength + growth)
+
+            if plan.beachhead_strength >= 0.9:
+                plan.phase = InvasionPhase.COMPLETED
 
         feedback["progress"] = plan.beachhead_strength
 

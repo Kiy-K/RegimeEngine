@@ -184,12 +184,18 @@ def initialize_land(cluster_owners: Dict[int, int]) -> LandWorld:
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 def _spawn_beachhead_units(world: LandWorld, cluster_id: int, faction_id: int, rng: np.random.Generator):
-    """Spawn garrison units when an invasion captures a sector."""
-    units = [
-        create_unit(CowUnitType.INFANTRY, 1, faction_id, cluster_id),
-        create_unit(CowUnitType.INFANTRY, 1, faction_id, cluster_id),
-        create_unit(CowUnitType.MILITIA, 1, faction_id, cluster_id),
-    ]
+    """Spawn garrison units when an invasion captures a sector (fixed 3 units)."""
+    _spawn_beachhead_units_scaled(world, cluster_id, faction_id, 2, 1, rng)
+
+
+def _spawn_beachhead_units_scaled(world: LandWorld, cluster_id: int, faction_id: int,
+                                   n_infantry: int, n_militia: int, rng: np.random.Generator):
+    """Spawn proportional garrison units based on troops that landed."""
+    units = []
+    for _ in range(n_infantry):
+        units.append(create_unit(CowUnitType.INFANTRY, 1, faction_id, cluster_id))
+    for _ in range(n_militia):
+        units.append(create_unit(CowUnitType.MILITIA, 1, faction_id, cluster_id))
     if cluster_id not in world.garrisons:
         world.garrisons[cluster_id] = []
     world.garrisons[cluster_id].extend(units)
