@@ -1209,6 +1209,10 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
         except (ValueError, AttributeError):
             return default
 
+    # Guard against None input (API returned empty response)
+    if action_text is None:
+        action_text = "NOOP"
+
     # Clean text: strip markdown, bullets, numbering, quotes
     clean = action_text.strip()
     for junk in ["```", "**"]:

@@ -260,7 +260,7 @@ class LLMClient:
         if hasattr(response, "usage") and response.usage:
             self.total_tokens_in += response.usage.prompt_tokens
             self.total_tokens_out += response.usage.completion_tokens
-        return content
+        return content or "NOOP"
 
     def _random_action(self) -> str:
         """Generate random plausible actions for dry-run mode."""
