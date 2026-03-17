@@ -1320,15 +1320,37 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
 
             elif cmd in ("SET_BUDGET", "BUDGET"):
                 # Parse: SET_BUDGET MILITARY 0.35 PRODUCTION 0.20 ...
+                # Handle multi-word names: "Debt Service" → DEBT_SERVICE
+                _BUDGET_ALIASES = {
+                    "MILITARY": "MILITARY", "MIL": "MILITARY", "DEFENSE": "MILITARY", "DEFENCE": "MILITARY",
+                    "PRODUCTION": "PRODUCTION", "PROD": "PRODUCTION", "INDUSTRY": "PRODUCTION",
+                    "RESEARCH": "RESEARCH", "SCIENCE": "RESEARCH", "TECH": "RESEARCH",
+                    "WELFARE": "WELFARE", "SOCIAL": "WELFARE", "CIVILIAN": "WELFARE",
+                    "POLICE": "POLICE", "SECURITY": "POLICE", "POLICE/SECURITY": "POLICE",
+                    "INFRASTRUCTURE": "INFRASTRUCTURE", "INFRA": "INFRASTRUCTURE",
+                    "DEBT_SERVICE": "DEBT_SERVICE", "DEBT": "DEBT_SERVICE", "DEBTSERVICE": "DEBT_SERVICE",
+                }
                 params = {}
                 i = 0
                 while i < len(args) - 1:
-                    cat_name = args[i].upper()
-                    try:
-                        val = float(args[i + 1].strip(",:;."))
-                        params[cat_name] = val
-                        i += 2
-                    except (ValueError, IndexError):
+                    cat_raw = args[i].upper().strip(",:;.()")
+                    # Try joining with next word for multi-word categories
+                    if cat_raw not in _BUDGET_ALIASES and i + 2 < len(args):
+                        two_word = cat_raw + "_" + args[i + 1].upper().strip(",:;.()")
+                        if two_word in _BUDGET_ALIASES:
+                            cat_raw = two_word
+                            i += 1  # skip the second word
+                    cat_name = _BUDGET_ALIASES.get(cat_raw)
+                    if cat_name:
+                        try:
+                            val = float(args[i + 1].strip(",:;.%"))
+                            if val > 1.0:
+                                val /= 100.0  # LLM wrote "30" meaning 30%
+                            params[cat_name] = val
+                            i += 2
+                        except (ValueError, IndexError):
+                            i += 1
+                    else:
                         i += 1
                 actions.append({"type": "set_budget", "params": params})
 
@@ -2155,7 +2177,11 @@ def apply_blf_actions(game: GameState, actions: List[Dict[str, Any]], rng: np.ra
 
         elif t == "move":
             cid = act.get("cluster", 0)
-            if cid < 18:  # Oceania clusters only (0-17)
+            # Anti-exploit: max 1 move per turn (prevents double-move bug)
+            already_moved = any("moves to" in r for r in results)
+            if already_moved:
+                results.append("Winston already relocated this turn. Use the other action slot productively.")
+            elif cid < 18:  # Oceania clusters only (0-17)
                 w.location_cluster = cid
                 w.detection_heat = max(0.0, w.detection_heat - 0.1)
                 results.append(f"Winston moves to {_blf_cluster_name(cid)} sewers. New safehouse. Heat drops.")

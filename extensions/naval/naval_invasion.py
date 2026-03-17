@@ -265,8 +265,13 @@ def step_invasion(
     elif plan.phase == InvasionPhase.ASSEMBLY:
         plan.assembly_steps_done += 1
 
-        # Check weather — can't launch in storm
+        # Check weather — can't launch in storm (but time still passes!)
         if sea_state > 0.6:
+            # Assembly timeout: abort after 3× required (too many storms)
+            if plan.assembly_steps_done > plan.assembly_steps_required * 3:
+                plan.phase = InvasionPhase.ABORTED
+                feedback["aborted"] = True
+                feedback["abort_reason"] = "Assembly aborted — persistent storms prevented fleet formation."
             feedback["progress"] = plan.assembly_steps_done / plan.assembly_steps_required
             return plan, feedback  # wait for weather
 
@@ -299,6 +304,12 @@ def step_invasion(
                     plan.crossing_steps_required = max(1, int(width / 80.0))
             else:
                 plan.phase = InvasionPhase.ABORTED  # no transports
+
+        # Assembly timeout: abort after 3× required (stuck in assembly)
+        if plan.assembly_steps_done > plan.assembly_steps_required * 3:
+            plan.phase = InvasionPhase.ABORTED
+            feedback["aborted"] = True
+            feedback["abort_reason"] = "Assembly timeout — invasion cancelled, troops dispersed."
 
         feedback["progress"] = plan.assembly_steps_done / plan.assembly_steps_required
 
