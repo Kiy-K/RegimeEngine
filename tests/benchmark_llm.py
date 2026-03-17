@@ -68,8 +68,13 @@ from gravitas.llm_game import (
 # LLM Client                                                                  #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
+# Known Nebius AI Studio model prefixes
+_NEBIUS_PREFIXES = ("minimax/", "zai-org/", "deepseek-ai/", "meta-llama/", "Qwen/",
+                    "moonshotai/", "gpt-oss", "BAAI/")
+
+
 class LLMClient:
-    """Multi-provider LLM client: Mistral, Anthropic, or dry-run."""
+    """Multi-provider LLM client: Mistral, Anthropic, Nebius AI Studio, or dry-run."""
 
     def __init__(self, model: str = "mistral-small-latest", dry_run: bool = False,
                  max_tokens: int = 1024, label: str = ""):
@@ -78,7 +83,7 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.label = label or model
         self.client = None
-        self.provider = "none"  # "mistral", "anthropic", "none"
+        self.provider = "none"  # "mistral", "anthropic", "nebius", "none"
         # Token tracking
         self.total_tokens_in = 0
         self.total_tokens_out = 0
@@ -96,6 +101,8 @@ class LLMClient:
         if not dry_run:
             if "claude" in model:
                 self._init_anthropic()
+            elif any(model.startswith(p) for p in _NEBIUS_PREFIXES):
+                self._init_nebius()
             else:
                 self._init_mistral()
 
@@ -127,6 +134,24 @@ class LLMClient:
             print("WARNING: anthropic not installed. pip install anthropic")
             self.dry_run = True
 
+    def _init_nebius(self):
+        """Initialize Nebius AI Studio client (OpenAI-compatible API)."""
+        try:
+            from openai import OpenAI
+            api_key = os.environ.get("NEBIUS_API_KEY", "")
+            if not api_key:
+                print(f"WARNING: NEBIUS_API_KEY not set for model {self.model}. Dry-run.")
+                self.dry_run = True
+            else:
+                self.client = OpenAI(
+                    base_url="https://api.studio.nebius.com/v1",
+                    api_key=api_key,
+                )
+                self.provider = "nebius"
+        except ImportError:
+            print("WARNING: openai not installed. pip install openai")
+            self.dry_run = True
+
     def chat(self, system: str, user: str, max_retries: int = 5) -> str:
         """Send a chat message with automatic retry on failure. 5s sleep between retries."""
         self.total_calls += 1
@@ -141,6 +166,8 @@ class LLMClient:
                     result = self._chat_mistral(system, user)
                 elif self.provider == "anthropic":
                     result = self._chat_anthropic(system, user)
+                elif self.provider == "nebius":
+                    result = self._chat_nebius(system, user)
                 else:
                     result = "NOOP"
                 latency = time.time() - t_start
@@ -216,6 +243,23 @@ class LLMClient:
         if hasattr(response, "usage") and response.usage:
             self.total_tokens_in += response.usage.input_tokens
             self.total_tokens_out += response.usage.output_tokens
+        return content
+
+    def _chat_nebius(self, system: str, user: str) -> str:
+        """Chat via Nebius AI Studio (OpenAI-compatible endpoint)."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=self.max_tokens,
+            temperature=0.7,
+        )
+        content = response.choices[0].message.content
+        if hasattr(response, "usage") and response.usage:
+            self.total_tokens_in += response.usage.prompt_tokens
+            self.total_tokens_out += response.usage.completion_tokens
         return content
 
     def _random_action(self) -> str:
@@ -627,9 +671,19 @@ def main():
         _load_env(args.env_file)
     # Apply faction model defaults
     if args.oceania_model is None:
-        args.oceania_model = "claude-haiku-4-5-20251001" if os.environ.get("ANTHROPIC_API_KEY") else args.model #I MADE THIS, don't change
+        if os.environ.get("NEBIUS_API_KEY"):
+            args.oceania_model = "minimax/minimax-m2.1"  # Nebius: MiniMax M2.1
+        elif os.environ.get("ANTHROPIC_API_KEY"):
+            args.oceania_model = "claude-haiku-4-5-20251001"
+        else:
+            args.oceania_model = args.model
     if args.eurasia_model is None:
-        args.eurasia_model = "mistral-medium-latest" if os.environ.get("MISTRAL_API_KEY") else args.model #I MADE THIS, don't change
+        if os.environ.get("NEBIUS_API_KEY"):
+            args.eurasia_model = "zai-org/GLM-4.7"  # Nebius: GLM 4.7
+        elif os.environ.get("MISTRAL_API_KEY"):
+            args.eurasia_model = "mistral-medium-latest"
+        else:
+            args.eurasia_model = args.model
     if args.winston_model is None:
         args.winston_model = args.oceania_model
     run_benchmark(args)
