@@ -1399,7 +1399,8 @@ def parse_action(action_text: str, game: GameState, faction_id: int) -> List[Dic
         except (ValueError, IndexError):
             pass
 
-    return actions[:3] if actions else [{"type": "noop"}]
+    actions = _dedup_actions(actions[:3]) if actions else [{"type": "noop"}]
+    return actions
 
 
 def apply_actions(game: GameState, faction_id: int, actions: List[Dict[str, Any]], rng: np.random.Generator) -> List[str]:
@@ -1495,8 +1496,18 @@ def apply_actions(game: GameState, faction_id: int, actions: List[Dict[str, Any]
                         if inv.is_active and inv.faction_id == faction_id
                         and inv.target_cluster == act["target"]]
             if existing:
+                ex = existing[0]
                 target_name = game.cluster_names[act["target"]] if act["target"] < len(game.cluster_names) else f"C{act['target']}"
-                results.append(f"Invasion to {target_name} already in progress (#{existing[0].invasion_id}, {existing[0].phase.name}). DO NOT re-plan.")
+                # RECKLESS_INVASION can accelerate an existing PLANNING invasion
+                if inv_type == InvasionType.RECKLESS and ex.phase.name == "PLANNING":
+                    old_req = ex.planning_steps_required
+                    ex.planning_steps_required = min(ex.planning_steps_required, 3)
+                    ex.invasion_type = InvasionType.RECKLESS
+                    results.append(f"⚡ Invasion #{ex.invasion_id} to {target_name} ACCELERATED to RECKLESS! "
+                                   f"Planning cut from {old_req} to {ex.planning_steps_required} turns. "
+                                   f"Higher casualties expected.")
+                else:
+                    results.append(f"Invasion to {target_name} already in progress (#{ex.invasion_id}, {ex.phase.name}). DO NOT re-plan.")
                 continue
 
             # Set planning time based on type
@@ -2134,6 +2145,28 @@ def parse_blf_action(action_text: str, game: GameState) -> List[Dict[str, Any]]:
     return actions[:2]  # max 2 actions
 
 
+def _dedup_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate faction actions: only 1 SET_BUDGET and 1 plan_invasion per target per turn."""
+    seen_budget = False
+    seen_inv_targets = set()
+    deduped = []
+    # Process in reverse so the LAST SET_BUDGET wins
+    for act in reversed(actions):
+        t = act["type"]
+        if t == "set_budget":
+            if seen_budget:
+                continue  # skip earlier duplicate
+            seen_budget = True
+        elif t == "plan_invasion":
+            tgt = act.get("target", -1)
+            if tgt in seen_inv_targets:
+                continue
+            seen_inv_targets.add(tgt)
+        deduped.append(act)
+    deduped.reverse()
+    return deduped
+
+
 def apply_blf_actions(game: GameState, actions: List[Dict[str, Any]], rng: np.random.Generator) -> List[str]:
     """Apply Winston's parsed actions to the BLF state."""
     results = []
@@ -2198,9 +2231,10 @@ def apply_blf_actions(game: GameState, actions: List[Dict[str, Any]], rng: np.ra
         elif t == "move":
             cid = act.get("cluster", 0)
             # Anti-exploit: max 1 move per turn (prevents double-move bug)
+            # Only blocks additional MOVEs, NOT other action types
             already_moved = any("moves to" in r for r in results)
             if already_moved:
-                results.append("Winston already relocated this turn. Use the other action slot productively.")
+                continue  # silently skip duplicate move, let next action run
             elif cid < 18:  # Oceania clusters only (0-17)
                 w.location_cluster = cid
                 w.detection_heat = max(0.0, w.detection_heat - 0.1)
