@@ -596,6 +596,22 @@ def step_game(game: GameState, rng: np.random.Generator, dt: float = 1.0) -> Dic
         updated_inv, inv_fb = step_invasion(inv, game.naval, defender_str, defender_fort, sea_state, rng, dt)
         game.invasions[idx] = updated_inv  # BUG FIX: write back updated invasion
 
+    # 5b. Process completed invasions — flip territory ownership
+    for inv in game.invasions:
+        if inv.phase.name == "COMPLETED":
+            target = inv.target_cluster
+            old_owner = game.cluster_owners.get(target, -1)
+            if old_owner != inv.faction_id:
+                game.cluster_owners[target] = inv.faction_id
+                cname = game.cluster_names[target] if target < len(game.cluster_names) else f"C{target}"
+                fname = game.faction_names.get(inv.faction_id, f"F{inv.faction_id}")
+                feedback.setdefault("territory_captured", []).append(
+                    f"{fname} captured {cname}! Territory flipped from owner {old_owner}.")
+                # Spawn garrison units for the conqueror
+                if game.land is not None:
+                    from extensions.military.land_bridge import _spawn_beachhead_units
+                    _spawn_beachhead_units(game.land, target, inv.faction_id, rng)
+
     # 6. BLF Resistance (only affects Oceania)
     if game.resistance is not None:
         food_ratios = {}

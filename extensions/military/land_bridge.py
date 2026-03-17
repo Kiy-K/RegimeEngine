@@ -183,6 +183,18 @@ def initialize_land(cluster_owners: Dict[int, int]) -> LandWorld:
 # Land Combat Step — resolves battles in contested sectors                   #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
+def _spawn_beachhead_units(world: LandWorld, cluster_id: int, faction_id: int, rng: np.random.Generator):
+    """Spawn garrison units when an invasion captures a sector."""
+    units = [
+        create_unit(CowUnitType.INFANTRY, 1, faction_id, cluster_id),
+        create_unit(CowUnitType.INFANTRY, 1, faction_id, cluster_id),
+        create_unit(CowUnitType.MILITIA, 1, faction_id, cluster_id),
+    ]
+    if cluster_id not in world.garrisons:
+        world.garrisons[cluster_id] = []
+    world.garrisons[cluster_id].extend(units)
+
+
 def step_land(
     world: LandWorld,
     cluster_owners: Dict[int, int],
