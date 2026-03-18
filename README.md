@@ -95,8 +95,37 @@ GravitasEngine/
 ```bash
 git clone https://github.com/Kiy-K/Gravitas-Engine.git
 cd Gravitas-Engine
-pip install -e ".[dev]"        # Install with dev dependencies
-# pip install -e ".[all]"      # Install with all optional dependencies
+uv lock
+uv sync --extra train --extra dev --extra viz --extra gui
+```
+
+### Modern Environment Setup (uv)
+
+```bash
+# 1) Install uv (one-time; macOS/Linux example)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2) Create/update lockfile from pyproject.toml
+uv lock
+
+# 3) Sync environment from uv.lock
+uv sync --extra train --extra dev --extra viz --extra gui
+
+# 4) Run commands inside the managed environment
+uv run python cli.py list scenarios
+```
+
+Legacy pip fallback:
+
+```bash
+pip install -e ".[train,dev,viz,gui]"
+```
+
+Daily workflow:
+
+```bash
+# After pulling new commits, just resync
+uv sync
 ```
 
 ## Quick Start

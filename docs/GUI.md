@@ -43,8 +43,8 @@ The GUI provides a live strategic map view of the 35-sector war simulation, show
 ## Installation
 
 ```bash
-# Install Pygame if not already present
-pip install pygame
+# Install pygame-ce if not already present
+pip install pygame-ce
 
 # Generate map assets (one-time)
 .venv/bin/python gui/generate_map.py
@@ -130,7 +130,7 @@ The GUI connects directly to the GRAVITAS Engine:
 - Close other applications to free memory
 
 ### Display Issues
-- Ensure Pygame is installed: `pip install pygame`
+- Ensure pygame-ce is installed: `pip install pygame-ce`
 - Check that map assets exist in `gui/assets/`
 - Try windowed mode if fullscreen fails
 
@@ -149,7 +149,7 @@ gui/
 ## Dependencies
 
 - **Python 3.9+**
-- **Pygame 2.5+**
+- **pygame-ce 2.5+**
 - **NumPy** (from main project)
 
 The GUI imports from the main GRAVITAS Engine, so ensure the project is properly installed with all dependencies.

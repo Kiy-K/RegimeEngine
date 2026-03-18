@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68", "wheel", "numpy>=1.24"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "gravitas-engine"
@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 train = [
     "stable-baselines3>=2.2",
+    "sb3-contrib>=2.2",
     "torch>=2.0",
     "tqdm",
     "rich",
@@ -32,14 +33,18 @@ dev = [
     "pytest-cov",
     "matplotlib>=3.7",
     "pandas>=2.0",
+    "networkx>=3.0",
     "hypothesis>=6.80",
 ]
 viz = [
     "seaborn>=0.12",
     "matplotlib>=3.7",
 ]
+gui = [
+    "pygame-ce>=2.5",
+]
 all = [
-    "gravitas-engine[train,dev,viz]",
+    "gravitas-engine[train,dev,viz,gui]",
 ]
 
 [project.scripts]
